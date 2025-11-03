@@ -2,8 +2,7 @@
 
 import pandas as pd
 from typing import Dict, Any
-from vertexai.generative_models import GenerativeModel
-import vertexai
+import google.generativeai as genai
 
 from src.config import config
 from src.agent.state import AgentState
@@ -36,16 +35,13 @@ class InputNode:
 
 
 class QueryBuilderNode:
-    """Generates SQL query using Gemini via Vertex AI."""
+    """Generates SQL query using Gemini API."""
     
     def __init__(self):
-        # Initialize Vertex AI
-        vertexai.init(
-            project=config.google_cloud_project, 
-            location=config.vertex_ai_location
-        )
-        # Use Gemini 1.5 Flash for faster responses
-        self.model = GenerativeModel("gemini-1.5-flash")
+        # Initialize Gemini API
+        genai.configure(api_key=config.gemini_api_key)
+        # Use Gemini 2.0 Flash for faster responses
+        self.model = genai.GenerativeModel("gemini-2.0-flash")
         
     def _get_schema_context(self) -> str:
         """Provide hardcoded schema context for MVP."""
@@ -102,16 +98,16 @@ SQL Query:
         try:
             response = self.model.generate_content(
                 prompt,
-                generation_config={
-                    "temperature": 0.1,
-                    "max_output_tokens": 1000,
-                }
+                generation_config=genai.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=1000,
+                )
             )
             
             # Handle potential None or empty response
             if not response or not hasattr(response, 'text'):
                 return {
-                    "query_error": "No response from Gemini. Please check your Vertex AI setup.",
+                    "query_error": "No response from Gemini. Please check your API key.",
                     "retry_count": state.get("retry_count", 0) + 1
                 }
             
