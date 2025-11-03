@@ -2,7 +2,7 @@ langgraph==0.2.45
 langchain==0.3.0
 google-cloud-aiplatform==1.48.0
 google-cloud-bigquery==3.25.0
-pandas==2.2.2
+pandas>=2.0.0
 python-dotenv==1.0.1
 pydantic==2.9.2
 typing-extensions==4.12.0

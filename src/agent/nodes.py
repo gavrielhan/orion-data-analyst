@@ -2,7 +2,7 @@
 
 import pandas as pd
 from typing import Dict, Any
-from vertexai.preview.generative_models import GenerativeModel
+from vertexai.generative_models import GenerativeModel
 import vertexai
 
 from src.config import config
