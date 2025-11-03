@@ -107,7 +107,22 @@ SQL Query:
                     "max_output_tokens": 1000,
                 }
             )
+            
+            # Handle potential None or empty response
+            if not response or not hasattr(response, 'text'):
+                return {
+                    "query_error": "No response from Gemini. Please check your Vertex AI setup.",
+                    "retry_count": state.get("retry_count", 0) + 1
+                }
+            
             sql_query = response.text.strip()
+            
+            # Check for empty SQL
+            if not sql_query:
+                return {
+                    "query_error": "Gemini returned an empty SQL query. Please rephrase your question.",
+                    "retry_count": state.get("retry_count", 0) + 1
+                }
             
             # Clean SQL - remove markdown code blocks if present
             if sql_query.startswith("```sql"):
