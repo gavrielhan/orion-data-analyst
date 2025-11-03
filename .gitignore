@@ -53,3 +53,10 @@ htmlcov/
 *.parquet
 *.csv
 
+# Security - Never commit keys!
+key.json
+*-key.json
+*-key*.json
+credentials.json
+service-account*.json
+
