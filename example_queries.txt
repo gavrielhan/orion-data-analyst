@@ -1,0 +1,40 @@
+Example Queries for Orion Agent (MVP)
+
+Simple Aggregation:
+- What are total sales?
+- Show me total revenue
+- What is the total number of orders?
+
+Counting Queries:
+- How many orders are there?
+- Count the number of products
+- Show me the number of users
+
+Top/Ranking Queries:
+- What are the top 10 products by sales?
+- Show me the best performing categories
+- List the products with highest revenue
+
+Trend Analysis:
+- Show me sales trends over time
+- What are the monthly sales figures?
+- Display orders by month
+
+Status Queries:
+- How many orders are in each status?
+- Show me the breakdown of order statuses
+- What percentage of orders are completed?
+
+Product Queries:
+- What are the different product categories?
+- List all product brands
+- Show me the product departments
+
+User Demographics:
+- What is the age distribution of users?
+- Show me users by country
+- What are the most common traffic sources?
+
+Note: For MVP, start with simple queries without complex JOINs.
+The agent handles these well once fully set up with credentials.
+
