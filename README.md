@@ -2,6 +2,8 @@
 
 An AI-powered Data Analysis Agent that connects to Google BigQuery's public e-commerce dataset and performs intelligent data exploration through natural language interaction.
 
+🔗 **Repository**: https://github.com/gavrielhan/orion-data-analyst
+
 ## Overview
 
 Orion is an intelligent business analyst that:
