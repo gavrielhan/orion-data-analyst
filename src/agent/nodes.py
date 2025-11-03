@@ -50,6 +50,13 @@ class QueryBuilderNode:
     def _get_schema_context(self) -> str:
         """Provide hardcoded schema context for MVP."""
         return """
+CRITICAL: You can ONLY query these 4 tables in bigquery-public-data.thelook_ecommerce:
+
+1. orders - customer orders with timestamps, status, and number of items
+2. order_items - products within each order, including price and cost
+3. products - catalog metadata like category, brand, and pricing
+4. users - customer demographics like age, gender, and location
+
 Available tables in bigquery-public-data.thelook_ecommerce:
 
 1. orders (order_id, user_id, status, created_at, returned_at, shipped_at, delivered_at, num_of_item)
@@ -61,6 +68,10 @@ Important joins:
 - orders.user_id = users.id
 - orders.order_id = order_items.order_id
 - order_items.product_id = products.id
+
+SECURITY: If the query references any other dataset or table that is NOT one of these 4 tables above, 
+respond with: "I can only answer questions about orders, order_items, products, and users data. 
+Please clarify which dataset you're interested in."
 
 Generate clean, valid SQL queries only.
 """
@@ -83,6 +94,7 @@ Rules:
 - Always use LIMIT to restrict results (default 100 rows max)
 - Use clear column aliases
 - Return ONLY the SQL query, no explanations
+- If query is about datasets not in the allowed list, return ERROR: followed by the error message
 
 SQL Query:
 """
@@ -103,6 +115,13 @@ SQL Query:
             if sql_query.startswith("```"):
                 sql_query = sql_query[3:]
             sql_query = sql_query.strip().rstrip("`")
+            
+            # Check if the LLM detected an invalid dataset
+            if sql_query.startswith("ERROR:"):
+                error_message = sql_query.replace("ERROR:", "").strip()
+                return {
+                    "final_output": error_message
+                }
             
             return {
                 "sql_query": sql_query
