@@ -2,8 +2,8 @@
 
 import pandas as pd
 from typing import Dict, Any
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, AIMessage
+from vertexai.preview.generative_models import GenerativeModel
+import vertexai
 
 from src.config import config
 from src.agent.state import AgentState
@@ -31,21 +31,21 @@ class InputNode:
             intent = "general_query"
         
         return {
-            "query_intent": intent,
-            "messages": state.get("messages", []) + [HumanMessage(content=user_query)]
+            "query_intent": intent
         }
 
 
 class QueryBuilderNode:
-    """Generates SQL query using Gemini."""
+    """Generates SQL query using Gemini via Vertex AI."""
     
     def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            google_api_key=config.google_ai_api_key,
-            temperature=0.1,
-            max_tokens=1000,
+        # Initialize Vertex AI
+        vertexai.init(
+            project=config.google_cloud_project, 
+            location=config.vertex_ai_location
         )
+        # Use Gemini 1.5 Flash for faster responses
+        self.model = GenerativeModel("gemini-1.5-flash")
         
     def _get_schema_context(self) -> str:
         """Provide hardcoded schema context for MVP."""
@@ -88,8 +88,14 @@ SQL Query:
 """
         
         try:
-            response = self.llm.invoke([HumanMessage(content=prompt)])
-            sql_query = response.content.strip()
+            response = self.model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": 0.1,
+                    "max_output_tokens": 1000,
+                }
+            )
+            sql_query = response.text.strip()
             
             # Clean SQL - remove markdown code blocks if present
             if sql_query.startswith("```sql"):
@@ -99,10 +105,7 @@ SQL Query:
             sql_query = sql_query.strip().rstrip("`")
             
             return {
-                "sql_query": sql_query,
-                "messages": state.get("messages", []) + [
-                    AIMessage(content=f"Generated SQL: {sql_query}")
-                ]
+                "sql_query": sql_query
             }
         except Exception as e:
             return {

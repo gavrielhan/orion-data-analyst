@@ -21,8 +21,8 @@ class Config:
         self.google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT")
         self.google_application_credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         
-        # Gemini API
-        self.google_ai_api_key = os.getenv("GOOGLE_AI_API_KEY")
+        # Vertex AI settings
+        self.vertex_ai_location = os.getenv("VERTEX_AI_LOCATION", "us-central1")
         
         # BigQuery settings
         self.bigquery_dataset = os.getenv(
@@ -38,9 +38,6 @@ class Config:
         
         if not self.google_cloud_project:
             missing.append("GOOGLE_CLOUD_PROJECT")
-        
-        if not self.google_ai_api_key:
-            missing.append("GOOGLE_AI_API_KEY")
         
         return missing
 

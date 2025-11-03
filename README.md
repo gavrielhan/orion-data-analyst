@@ -25,7 +25,7 @@ Each node handles a distinct analytical step, creating a directed graph of reaso
 ## Features (MVP)
 
 ✅ Natural language query processing  
-✅ Dynamic SQL generation with Gemini  
+✅ Dynamic SQL generation with Gemini via Vertex AI  
 ✅ BigQuery integration  
 ✅ Basic result display  
 ✅ CLI interface  

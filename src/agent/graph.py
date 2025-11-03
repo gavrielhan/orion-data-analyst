@@ -47,7 +47,6 @@ class OrionGraph:
             "query_error": None,
             "analysis_result": None,
             "final_output": "",
-            "messages": [],
             "retry_count": 0
         }
         

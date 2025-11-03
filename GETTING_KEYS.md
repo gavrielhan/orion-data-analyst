@@ -1,12 +1,13 @@
 # Quick Guide: Getting Your API Keys for Orion
 
-This guide walks you through getting the 3 keys you need to run Orion.
+This guide walks you through getting the 2 credentials you need to run Orion.
 
 ## What You Need
 
 1. **Google Cloud Project ID** - Your project identifier
-2. **Service Account JSON Key** - For BigQuery access
-3. **Gemini API Key** - For AI query generation
+2. **Service Account JSON Key** - For BigQuery and Vertex AI access
+
+**Note**: Orion now uses Gemini through Vertex AI, so you don't need a separate API key!
 
 ---
 
@@ -22,10 +23,19 @@ This guide walks you through getting the 3 keys you need to run Orion.
 
 **Free Tier**: Google Cloud offers $300 free credit for new users!
 
-### B. Enable BigQuery API
+### B. Enable Required APIs
 
+Enable both APIs Orion needs:
+
+**BigQuery API:**
 1. In Google Cloud Console, search for "BigQuery API" in the top search bar
 2. Click on "BigQuery API"
+3. Click the blue **"ENABLE"** button
+4. Wait for it to enable (usually 10-30 seconds)
+
+**Vertex AI API:**
+1. In the search bar, search for "Vertex AI API"
+2. Click on "Vertex AI API"
 3. Click the blue **"ENABLE"** button
 4. Wait for it to enable (usually 10-30 seconds)
 
@@ -57,17 +67,9 @@ This guide walks you through getting the 3 keys you need to run Orion.
 
 ---
 
-## Step 2: Get Gemini API Key (2 minutes)
+## Step 2: That's It!
 
-1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
-2. Sign in with the **same Google account** you used for Google Cloud
-3. Click the blue **"Create API Key"** button
-4. Select your project from the dropdown (or create a new API key)
-5. Click **"Create API key in project"**
-6. **Copy the API key immediately** - it looks like: `AIzaSy...` (long string)
-
-✅ **You now have**:
-- Gemini API Key
+✅ You now have everything you need! No separate Gemini API key required.
 
 ---
 
@@ -82,7 +84,7 @@ cp .env.example .env
 
 2. Open the `.env` file in any text editor
 
-3. Fill in your 3 keys:
+3. Fill in your 2 credentials:
 
 ```env
 # Paste your Project ID here (no spaces)
@@ -91,22 +93,21 @@ GOOGLE_CLOUD_PROJECT=your-actual-project-id
 # Paste the FULL path to your JSON key file
 GOOGLE_APPLICATION_CREDENTIALS=/full/path/to/your-downloaded-key.json
 
-# Paste your Gemini API key here (no spaces)
-GOOGLE_AI_API_KEY=AIzaSyYourActualKeyHereGoes
+# Optional: Vertex AI location (defaults to us-central1)
+VERTEX_AI_LOCATION=us-central1
 ```
 
 **Example**:
 ```env
 GOOGLE_CLOUD_PROJECT=my-orion-project-12345
 GOOGLE_APPLICATION_CREDENTIALS=/Users/john/Downloads/orion-agent-abc123.json
-GOOGLE_AI_API_KEY=AIzaSyB1234567890abcdefghijklmnopqrstuvwxyz
+VERTEX_AI_LOCATION=us-central1
 ```
 
 ### Important Notes:
 
 - **GOOGLE_CLOUD_PROJECT**: Just the project ID, nothing else
 - **GOOGLE_APPLICATION_CREDENTIALS**: Must be the **full absolute path** starting with `/`
-- **GOOGLE_AI_API_KEY**: The entire key string from AI Studio
 - No quotes needed around values
 - No spaces after the `=` sign
 
@@ -139,18 +140,19 @@ python -m src.cli
 ## Troubleshooting
 
 ### Error: "Missing required environment variables"
-- Check your `.env` file has all 3 keys
+- Check your `.env` file has GOOGLE_CLOUD_PROJECT and GOOGLE_APPLICATION_CREDENTIALS
 - Make sure there are no extra spaces
 - Verify the file is named exactly `.env` (with the dot)
 
 ### Error: "Invalid credentials" or "Permission denied"
 - Double-check your service account has "BigQuery Job User" role
 - Verify the JSON key file path is correct (use absolute path)
-- Make sure BigQuery API is enabled
+- Make sure BigQuery API and Vertex AI API are both enabled
 
-### Error: "API key not valid"  
-- Copy the Gemini API key again from [AI Studio](https://makersuite.google.com/app/apikey)
-- Make sure there are no extra spaces
+### Error: "Vertex AI not available" or "Model not found"
+- Make sure Vertex AI API is enabled in your project
+- Check that you're using the correct project ID
+- Verify your service account has appropriate permissions
 
 ### Error: "File not found" for credentials
 - Use the full absolute path: `/Users/yourname/path/to/file.json`
@@ -163,10 +165,10 @@ python -m src.cli
 
 - [ ] Google Cloud project created
 - [ ] BigQuery API enabled
+- [ ] Vertex AI API enabled
 - [ ] Service account created with "BigQuery Job User" role
 - [ ] Service account JSON key downloaded
-- [ ] Gemini API key obtained
-- [ ] `.env` file created with all 3 keys
+- [ ] `.env` file created with credentials
 - [ ] Orion runs successfully!
 
 ---

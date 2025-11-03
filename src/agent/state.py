@@ -1,8 +1,6 @@
 """Agent state management for Orion."""
 
 from typing import TypedDict, Optional, Any
-from typing_extensions import Annotated
-from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict):
@@ -26,6 +24,5 @@ class AgentState(TypedDict):
     final_output: str
     
     # Metadata
-    messages: Annotated[list, add_messages]
     retry_count: int
 
