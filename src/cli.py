@@ -51,7 +51,7 @@ def main():
     while True:
         try:
             # Get user query
-            user_query = input("\n❓ You: ").strip()
+            user_query = input("\n You: ").strip()
             
             if not user_query:
                 continue

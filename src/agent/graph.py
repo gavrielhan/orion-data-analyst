@@ -18,13 +18,49 @@ class OrionGraph:
         self.graph = self._build_graph()
         self.app = self.graph.compile()
     
+    def _check_input_routing(self, state: AgentState) -> str:
+        """Route from input to query builder."""
+        # All queries go to query_builder first - it will decide if meta or SQL
+        return "query_builder"
+    
     def _check_if_direct_output(self, state: AgentState) -> str:
         """Check if QueryBuilder returned a direct output (error message)."""
         # Check if final_output exists and is not empty
         final_output = state.get("final_output", "")
+        sql_query = state.get("sql_query", "")
+        query_error = state.get("query_error")
+        retry_count = state.get("retry_count", 0)
+        
         if final_output and final_output.strip():
             return "output"
+        
+        if query_error:
+            # If there's an error and no SQL query, check if we should retry
+            if not sql_query:
+                # Check if we should retry (for missing prefix errors or rate limits)
+                should_retry = (
+                    ("Invalid response format" in query_error and retry_count < 3) or
+                    ("Rate limit" in query_error and retry_count < 3)
+                )
+                if should_retry:
+                    return "query_builder"
+                # Otherwise, go to output with error
+                return "output"
+        
+        # No error, proceed to BigQuery execution
         return "bigquery_executor"
+    
+    def _check_retry_needed(self, state: AgentState) -> str:
+        """Check if we should retry after BigQuery error."""
+        query_error = state.get("query_error")
+        retry_count = state.get("retry_count", 0)
+        
+        # If there's an error and we haven't exceeded max retries, retry
+        if query_error and retry_count < 3:
+            return "query_builder"
+        
+        # Otherwise, go to output
+        return "output"
     
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph with all nodes and edges."""
@@ -38,7 +74,14 @@ class OrionGraph:
         
         # Define edges
         workflow.set_entry_point("input")
-        workflow.add_edge("input", "query_builder")
+        workflow.add_conditional_edges(
+            "input",
+            self._check_input_routing,
+            {
+                "output": "output",
+                "query_builder": "query_builder"
+            }
+        )
         workflow.add_conditional_edges(
             "query_builder",
             self._check_if_direct_output,
@@ -47,7 +90,14 @@ class OrionGraph:
                 "bigquery_executor": "bigquery_executor"
             }
         )
-        workflow.add_edge("bigquery_executor", "output")
+        workflow.add_conditional_edges(
+            "bigquery_executor",
+            self._check_retry_needed,
+            {
+                "query_builder": "query_builder",
+                "output": "output"
+            }
+        )
         workflow.add_edge("output", END)
         
         return workflow

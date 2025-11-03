@@ -1,0 +1,296 @@
+{
+  "orders": {
+    "table_name": "orders",
+    "description": "Programatically generated orders for The Look fictitious e-commerce store",
+    "columns": [
+      {
+        "name": "order_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "user_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "status",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "gender",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "created_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "returned_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "shipped_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "delivered_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "num_of_item",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      }
+    ]
+  },
+  "order_items": {
+    "table_name": "order_items",
+    "description": "Programatically generated order items for The Look fictitious e-commerce store",
+    "columns": [
+      {
+        "name": "id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "order_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "user_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "product_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "inventory_item_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "status",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "created_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "shipped_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "delivered_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "returned_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "sale_price",
+        "field_type": "FLOAT",
+        "mode": "NULLABLE",
+        "description": ""
+      }
+    ]
+  },
+  "products": {
+    "table_name": "products",
+    "description": "The Look fictitious e-commerce dataset - products table",
+    "columns": [
+      {
+        "name": "id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "cost",
+        "field_type": "FLOAT",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "category",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "name",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "brand",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "retail_price",
+        "field_type": "FLOAT",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "department",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "sku",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "distribution_center_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      }
+    ]
+  },
+  "users": {
+    "table_name": "users",
+    "description": "Programatically generated users for The Look fictitious e-commerce store",
+    "columns": [
+      {
+        "name": "id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "first_name",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "last_name",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "email",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "age",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "gender",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "state",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "street_address",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "postal_code",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "city",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "country",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "latitude",
+        "field_type": "FLOAT",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "longitude",
+        "field_type": "FLOAT",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "traffic_source",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "created_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "user_geom",
+        "field_type": "GEOGRAPHY",
+        "mode": "NULLABLE",
+        "description": ""
+      }
+    ]
+  }
+}
