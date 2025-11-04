@@ -290,9 +290,9 @@ class QueryBuilderNode:
         # Use configured Gemini model (default: gemini-2.0-flash-exp)
         self.model = genai.GenerativeModel(config.gemini_model)
         
-        # Rate limiter: 60 calls per minute (Gemini free tier limit)
-        from src.utils.rate_limiter import RateLimiter
-        self.rate_limiter = RateLimiter(max_calls=60, window_seconds=60)
+        # Use shared global rate limiter for all Gemini API calls
+        from src.utils.rate_limiter import get_global_rate_limiter
+        self.rate_limiter = get_global_rate_limiter()
         
     def _load_schema_context(self) -> str:
         """Load schema context from saved schema file or fallback to hardcoded."""
@@ -809,14 +809,21 @@ Your response (MUST start with META: or SQL:):
             
             # Check for rate limit errors (429)
             if "429" in error_str or "Resource exhausted" in error_str or "rate limit" in error_str.lower():
-                if retry_count < 3:
+                if retry_count < 2:  # Only 2 retries, not 3
+                    # Aggressive exponential backoff: 15s, 45s (total 60s)
+                    import time
+                    wait_seconds = 15 * (3 ** retry_count)  # 15s, then 45s
+                    if state.get("_verbose"):
+                        from src.utils.formatter import OutputFormatter
+                        print(OutputFormatter.warning(f"\n⏳ Rate limit hit! Waiting {wait_seconds}s to comply with API limits..."))
+                    time.sleep(wait_seconds)
                     return {
-                        "query_error": f"Rate limit exceeded. Retrying... (attempt {retry_count + 1}/3)",
+                        "query_error": f"Rate limit exceeded. Waited {wait_seconds}s, retrying... (attempt {retry_count + 1}/2)",
                         "retry_count": retry_count + 1
                     }
                 else:
                     return {
-                        "query_error": "Rate limit exceeded. Please wait a moment and try again later.",
+                        "query_error": "⚠️ Rate limit exceeded. Gemini API allows 60 requests/minute. Please wait 60 seconds before trying again.",
                         "retry_count": retry_count
                     }
             
@@ -1258,9 +1265,9 @@ class InsightGeneratorNode:
         # Use configured Gemini model (default: gemini-2.0-flash-exp)
         self.model = genai.GenerativeModel(config.gemini_model)
         
-        # Shared rate limiter with QueryBuilderNode
-        from src.utils.rate_limiter import RateLimiter
-        self.rate_limiter = RateLimiter(max_calls=60, window_seconds=60)
+        # Use shared global rate limiter for all Gemini API calls
+        from src.utils.rate_limiter import get_global_rate_limiter
+        self.rate_limiter = get_global_rate_limiter()
     
     def execute(self, state: AgentState) -> Dict[str, Any]:
         """Generate insights from empty results or data analysis."""
@@ -1329,13 +1336,8 @@ Possible reasons: filters too restrictive, no data for time period, typos, etc."
         if df is not None and len(df) <= 10:
             data_summary += f"\n\nData preview:\n{df.to_string(index=False)}"
         
-        # Generate visualization suggestion (skip if it might cause issues)
-        viz_suggestion = None
-        try:
-            viz_suggestion = self._suggest_visualization(user_query, df, analysis_type)
-        except Exception:
-            # Silently skip visualization suggestion if it fails
-            pass
+        # NOTE: Visualization suggestion is now generated lazily in CLI when user requests a chart
+        # This saves 1 LLM call per query (25% reduction in API usage)
         
         prompt = f"""You are a business analyst. Generate actionable insights from this data analysis.
 
@@ -1363,19 +1365,12 @@ Keep it concise and business-focused. Use bullet points."""
             
             insights = response.text.strip() if response and hasattr(response, 'text') else "Analysis complete."
             
-            result = {"analysis_result": insights}
-            if viz_suggestion:
-                result["visualization_suggestion"] = viz_suggestion
-            
-            return result
+            return {"analysis_result": insights}
         except Exception:
             # Fallback to key findings
-            result = {
+            return {
                 "analysis_result": "\n".join(key_findings) if key_findings else "Analysis complete."
             }
-            if viz_suggestion:
-                result["visualization_suggestion"] = viz_suggestion
-            return result
     
     def _suggest_visualization(self, user_query: str, df, analysis_type: str) -> dict:
         """Use LLM to suggest the best visualization configuration based on query and data."""
@@ -1400,11 +1395,16 @@ Analysis type: {analysis_type}
 Available columns:
 {columns_str}
 
-CRITICAL: Parse the user's explicit chart specifications from their query:
-- "year on x-axis" / "x-axis should be year" → x_col: order_year (or year column)
-- "count on y-axis" / "y-axis should be count" → y_col: count
-- "grouped by gender" / "one bar for females and one for males" → hue_col: gender
-- "each year contains 2 bars" → use hue_col for grouping
+CRITICAL: Parse the user's explicit chart specifications from their query (these override all heuristics):
+- "year on x-axis" / "x as the years" / "with x as year" → x_col: order_year (or year column)
+- "count on y-axis" / "y as the amounts" / "with y as count" → y_col: count
+- "grouped by gender" / "one bar for females and one for males" / "each year must contain 2 bars" → hue_col: gender
+- "plot them in a bar chart" → chart_type: bar
+- "show as pie chart" → chart_type: pie
+
+IMPORTANT: User queries often combine data request + chart specs in ONE sentence:
+Example: "show female and male counts per year, plot them in bar chart with x as years and y as amounts, each year must contain 2 bars"
+→ This means: x_col=order_year, y_col=count, hue_col=gender, chart_type=bar
 
 Chart type guidelines:
 - Bar: categorical comparison (sales by category, top products, counts by group)

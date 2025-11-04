@@ -5,6 +5,21 @@ from collections import deque
 from typing import Optional
 
 
+# Global shared rate limiter for all Gemini API calls
+_global_rate_limiter = None
+
+
+def get_global_rate_limiter(max_calls: int = 50, window_seconds: int = 60):
+    """
+    Get the global shared rate limiter instance.
+    Default: 50 calls per 60 seconds (conservative, leaves safety margin for Gemini's 60/min limit)
+    """
+    global _global_rate_limiter
+    if _global_rate_limiter is None:
+        _global_rate_limiter = RateLimiter(max_calls, window_seconds)
+    return _global_rate_limiter
+
+
 class RateLimiter:
     """
     Token bucket rate limiter for API calls.
@@ -23,7 +38,7 @@ class RateLimiter:
         self.window = window_seconds
         self.calls = deque()  # Timestamps of recent calls
     
-    def wait_if_needed(self) -> Optional[float]:
+    def wait_if_needed(self, verbose: bool = False) -> Optional[float]:
         """
         Wait if rate limit would be exceeded.
         Returns wait time in seconds, or None if no wait needed.
@@ -41,7 +56,15 @@ class RateLimiter:
             wait_time = self.window - (now - oldest_call)
             
             if wait_time > 0:
+                if verbose:
+                    print(f"⏱️  Rate limiter: waiting {wait_time:.1f}s (prevented API limit)")
                 time.sleep(wait_time)
+                # Remove old calls after waiting
+                now = time.time()
+                while self.calls and now - self.calls[0] > self.window:
+                    self.calls.popleft()
+                # Record this call
+                self.calls.append(now)
                 return wait_time
         
         # Record this call

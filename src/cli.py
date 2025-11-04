@@ -111,16 +111,26 @@ def load_session(session_path: str) -> list:
         return []
 
 
+def _generate_viz_suggestion_lazy(user_query, df, analysis_type="aggregation"):
+    """Generate visualization suggestion on-demand (lazy, only when needed)."""
+    try:
+        from src.agent.nodes import InsightGeneratorNode
+        insight_gen = InsightGeneratorNode()
+        return insight_gen._suggest_visualization(user_query, df, analysis_type)
+    except Exception:
+        return None
+
+
 def handle_export_options(df, visualizer, user_query_lower, result=None):
     """
-    Handle export options sequentially, using LLM-suggested visualization if available.
+    Handle export options sequentially, generating visualization suggestions lazily.
     Returns True if exports were requested in the original query.
     """
     if df is None or len(df) == 0:
         return False
     
-    # Get LLM visualization suggestion (from InsightGeneratorNode)
-    viz_suggestion = result.get("visualization_suggestion") if result else None
+    # NOTE: visualization_suggestion is NO LONGER auto-generated
+    # We generate it lazily only when user wants a chart (saves 25% of LLM calls)
     
     # Check if user already specified exports in their query
     wants_csv = any(kw in user_query_lower for kw in ["save csv", "export csv", "as csv", "to csv"])
@@ -129,6 +139,7 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
     x_col = None
     y_col = None
     title = None
+    hue_col = None
     
     # Extract chart type if specified
     if wants_chart:
@@ -136,12 +147,19 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
             if ctype in user_query_lower:
                 chart_type = ctype
                 break
+        
+        # Generate visualization suggestion ONLY when user wants a chart
+        # This is lazy evaluation - saves 1 LLM call per query if no chart needed
+        user_query = result.get("user_query", "") if result else ""
+        viz_suggestion = _generate_viz_suggestion_lazy(user_query, df)
+        
         if not chart_type and viz_suggestion:
             # Use LLM suggestion
             chart_type = viz_suggestion.get("chart_type", "bar")
             x_col = viz_suggestion.get("x_col")
             y_col = viz_suggestion.get("y_col")
             title = viz_suggestion.get("title")
+            hue_col = viz_suggestion.get("hue_col")
         elif not chart_type:
             chart_type = "bar"  # Fallback default
     
@@ -153,7 +171,6 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
             print(f"✅ CSV saved to: {filepath}")
         
         if wants_chart:
-            hue_col = viz_suggestion.get("hue_col") if viz_suggestion else None
             if viz_suggestion:
                 suggestion_text = f"{chart_type} chart with {x_col or 'auto'} (x) vs {y_col or 'auto'} (y)"
                 if hue_col:
@@ -177,7 +194,10 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
         filepath = visualizer.save_csv(df)
         print(f"✅ CSV saved to: {filepath}")
     
-    # Ask about chart second - with LLM suggestion if available
+    # Ask about chart second - generate suggestion lazily ONLY when needed
+    user_query = result.get("user_query", "") if result else ""
+    viz_suggestion = _generate_viz_suggestion_lazy(user_query, df)
+    
     if viz_suggestion:
         suggested_type = viz_suggestion.get("chart_type", "bar")
         suggested_x = viz_suggestion.get("x_col", "")
@@ -247,6 +267,11 @@ def _is_chart_customization_query(current_query: str, previous_query: str) -> bo
     try:
         import google.generativeai as genai
         from src.config import config
+        from src.utils.rate_limiter import get_global_rate_limiter
+        
+        # Use shared global rate limiter
+        rate_limiter = get_global_rate_limiter()
+        rate_limiter.wait_if_needed()
         
         genai.configure(api_key=config.gemini_api_key)
         model = genai.GenerativeModel(config.gemini_model)
@@ -291,8 +316,11 @@ Respond with ONLY one letter: A or B"""
             return 'B' in answer
         
         return False
-    except Exception:
-        # If LLM fails, assume it's a new query (safer default)
+    except Exception as e:
+        # If rate limit or LLM fails, assume it's a new query (safer default)
+        error_msg = str(e).lower()
+        if 'rate limit' in error_msg or '429' in error_msg or 'quota' in error_msg:
+            print(OutputFormatter.warning("⚠️  Rate limit reached, treating as new query"))
         return False
 
 
