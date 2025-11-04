@@ -3,8 +3,11 @@
 import hashlib
 import json
 import time
+import pickle
+import base64
 from pathlib import Path
 from typing import Optional, Any
+import pandas as pd
 
 
 class QueryCache:
@@ -31,21 +34,62 @@ class QueryCache:
         if key in self.memory_cache:
             entry = self.memory_cache[key]
             if time.time() - entry['timestamp'] < self.ttl:
-                return entry['data']
+                data = entry['data']
+                # Validate DataFrames in cached data
+                if isinstance(data, dict) and 'query_result' in data:
+                    query_result = data.get('query_result')
+                    if query_result is not None:
+                        if isinstance(query_result, str):
+                            # DataFrame was corrupted, remove from cache
+                            del self.memory_cache[key]
+                            return None
+                        if not isinstance(query_result, pd.DataFrame):
+                            # Not a DataFrame, might be corrupted
+                            del self.memory_cache[key]
+                            return None
+                return data
             else:
                 del self.memory_cache[key]
         
-        # Check disk cache
-        cache_file = self.cache_dir / f"{key}.json"
-        if cache_file.exists():
+        # Check disk cache - try pickle first (new format), then JSON (old format)
+        cache_file = self.cache_dir / f"{key}.pkl"
+        if not cache_file.exists():
+            # Fallback to old JSON format
+            cache_file = self.cache_dir / f"{key}.json"
+            if cache_file.exists():
+                try:
+                    with open(cache_file, 'r') as f:
+                        entry = json.load(f)
+                    
+                    if time.time() - entry['timestamp'] < self.ttl:
+                        # JSON format doesn't preserve DataFrames - skip corrupted cache
+                        return None
+                    else:
+                        cache_file.unlink()  # Delete expired
+                except Exception:
+                    pass
+                return None
+        
+        if cache_file.exists() and cache_file.suffix == '.pkl':
             try:
-                with open(cache_file, 'r') as f:
-                    entry = json.load(f)
+                with open(cache_file, 'rb') as f:
+                    entry = pickle.load(f)
                 
                 if time.time() - entry['timestamp'] < self.ttl:
                     # Restore to memory
                     self.memory_cache[key] = entry
-                    return entry['data']
+                    # Validate and restore DataFrame if needed
+                    data = entry['data']
+                    if isinstance(data, dict) and 'query_result' in data:
+                        query_result = data.get('query_result')
+                        if isinstance(query_result, str):
+                            # DataFrame was serialized incorrectly, skip cache
+                            return None
+                        # Ensure it's a DataFrame if it should be
+                        if query_result is not None and not isinstance(query_result, pd.DataFrame):
+                            # Try to restore from string representation (fallback)
+                            return None
+                    return data
                 else:
                     cache_file.unlink()  # Delete expired
             except Exception:
@@ -56,6 +100,14 @@ class QueryCache:
     def set(self, query: str, data: Any) -> None:
         """Cache query result."""
         key = self._get_cache_key(query)
+        
+        # Validate data before caching - ensure DataFrames are preserved
+        if isinstance(data, dict) and 'query_result' in data:
+            query_result = data.get('query_result')
+            if query_result is not None and not isinstance(query_result, pd.DataFrame):
+                # Don't cache if query_result is not a DataFrame (could be corrupted)
+                return
+        
         entry = {
             'timestamp': time.time(),
             'data': data,
@@ -65,17 +117,20 @@ class QueryCache:
         # Store in memory
         self.memory_cache[key] = entry
         
-        # Persist to disk (async in production, sync for simplicity)
-        cache_file = self.cache_dir / f"{key}.json"
+        # Persist to disk using pickle (preserves DataFrames properly)
+        cache_file = self.cache_dir / f"{key}.pkl"
         try:
-            with open(cache_file, 'w') as f:
-                json.dump(entry, f, default=str)
+            with open(cache_file, 'wb') as f:
+                pickle.dump(entry, f)
         except Exception:
             pass  # Silent fail on cache write
     
     def clear(self) -> None:
         """Clear all cache."""
         self.memory_cache.clear()
+        # Clear both JSON (old format) and pickle (new format) files
         for cache_file in self.cache_dir.glob("*.json"):
+            cache_file.unlink()
+        for cache_file in self.cache_dir.glob("*.pkl"):
             cache_file.unlink()
 

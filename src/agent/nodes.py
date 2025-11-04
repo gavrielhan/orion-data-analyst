@@ -1491,11 +1491,13 @@ Chart type guidelines:
 - Box: distribution analysis of a numeric variable
 
 Grouping (hue_col):
-- Use hue_col when query mentions multiple categories/groups
+- Use hue_col when query mentions multiple categories/groups OR when data structure indicates grouping
 - Keywords: "by gender", "by region", "by category", "male and female", "each X contains N bars"
+- Data structure patterns: If x_col has duplicate values (e.g., 2019, 2019, 2020, 2020...) and there's a categorical column with low cardinality (2-10 values), use it as hue_col
 - Example: "sales by region and product" → x_col: region, y_col: sales, hue_col: product
 - Example: "female and male counts per year" → x_col: order_year, y_col: count, hue_col: gender
 - Example: "each year contains 2 bars" → hue_col: (grouping column like gender/status)
+- Example: Data with order_year (2019, 2019, 2020, 2020...), gender (F, M, F, M...), order_count → x_col: order_year, y_col: order_count, hue_col: gender
 
 Axis selection priority:
 1. ALWAYS follow explicit user specifications (e.g., "year on x-axis")

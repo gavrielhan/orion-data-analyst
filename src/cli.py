@@ -126,7 +126,14 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
     Handle export options sequentially, generating visualization suggestions lazily.
     Returns True if exports were requested in the original query.
     """
-    if df is None or len(df) == 0:
+    # Validate df is a DataFrame
+    import pandas as pd
+    if df is None:
+        return False
+    if not isinstance(df, pd.DataFrame):
+        print(OutputFormatter.error(f"❌ Invalid data type: expected DataFrame, got {type(df).__name__}"))
+        return False
+    if len(df) == 0:
         return False
     
     # NOTE: visualization_suggestion is NO LONGER auto-generated
@@ -465,6 +472,13 @@ def main():
             
             # Update conversation history (limit to last 5)
             df = result.get("query_result")
+            # Validate df is a DataFrame (not corrupted from cache)
+            import pandas as pd
+            if df is not None and not isinstance(df, pd.DataFrame):
+                print(OutputFormatter.error(f"❌ Data corruption detected: query_result is {type(df).__name__}, expected DataFrame. Clearing cache..."))
+                cache.clear()
+                # Skip this result
+                continue
             result_summary = "No results" if df is None or len(df) == 0 else f"{len(df)} rows"
             conversation_history.append({
                 "query": user_query,

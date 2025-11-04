@@ -36,6 +36,9 @@ class Visualizer:
         Intelligently select x and y columns based on data types and chart type.
         Returns (x_col, y_col) tuple.
         """
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError(f"Expected DataFrame, got {type(df).__name__}")
+        
         if len(df.columns) == 0:
             return None, None
         if len(df.columns) == 1:
@@ -62,7 +65,13 @@ class Visualizer:
         # Select based on chart type
         if chart_type in ['bar', 'pie']:
             # Categorical x-axis, numeric y-axis
-            x_col = self._select_categorical_column(categorical_cols, cat_cardinality)
+            # For bar charts, prefer ordered columns (years, dates) if available
+            if chart_type == 'bar':
+                x_col = self._select_ordered_column(categorical_cols, df)
+                if not x_col:
+                    x_col = self._select_categorical_column(categorical_cols, cat_cardinality)
+            else:
+                x_col = self._select_categorical_column(categorical_cols, cat_cardinality)
             y_col = self._select_numeric_column(numeric_cols, df)
             
         elif chart_type == 'line':
@@ -168,6 +177,10 @@ class Visualizer:
         Returns (filepath, error_message) tuple. If error, filepath is None and error_message explains why.
         """
         try:
+            # Validate df is actually a DataFrame
+            if not isinstance(df, pd.DataFrame):
+                return None, f"Expected DataFrame, got {type(df).__name__}. Please check the data source."
+            
             plt.figure(figsize=(10, 6))
             
             chart_type = chart_type.lower()
