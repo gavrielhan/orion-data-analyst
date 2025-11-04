@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orion-data-analyst"
+dynamic = ["version"]
+description = "AI-powered BigQuery data analysis agent with natural language interface"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Gavriel Hannuna", email = "gavriel.hannuna@gmail.com"}
+]
+keywords = ["data-analysis", "bigquery", "ai", "nlp", "sql", "gemini", "analytics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "langgraph==0.2.45",
+    "langchain==0.3.0",
+    "google-cloud-bigquery==3.25.0",
+    "google-generativeai",
+    "db-dtypes",
+    "pandas>=2.0.0",
+    "python-dotenv==1.0.1",
+    "pydantic==2.9.2",
+    "typing-extensions==4.12.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/gavrielhan/orion-data-analyst"
+"Bug Reports" = "https://github.com/gavrielhan/orion-data-analyst/issues"
+Source = "https://github.com/gavrielhan/orion-data-analyst"
+Documentation = "https://github.com/gavrielhan/orion-data-analyst#readme"
+
+[project.scripts]
+orion = "src.cli:main"
+
+[tool.setuptools]
+packages = ["src", "src.agent", "src.utils"]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "src.__version__"}
+

@@ -11,7 +11,7 @@ setup(
     name="orion-data-analyst",
     version="1.0.0",
     author="Gavriel Hannuna",
-    author_email="your.email@example.com",
+    author_email="gavriel.hannuna@gmail.com",
     description="AI-powered BigQuery data analysis agent with natural language interface",
     long_description=long_description,
     long_description_content_type="text/markdown",
