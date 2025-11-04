@@ -9,10 +9,12 @@ from src.agent.nodes import (
     ValidationNode,
     BigQueryExecutorNode,
     ResultCheckNode,
+    AnalysisNode,
     InsightGeneratorNode,
     OutputNode,
     query_builder_node,
     result_check_node,
+    analysis_node,
     insight_generator_node
 )
 
@@ -80,18 +82,18 @@ class OrionGraph:
         if has_empty_results:
             return "insight_generator"
         
-        # Case 3: Success with data or max retries reached
-        return "output"
+        # Case 3: Success with data - analyze it
+        return "analysis"
     
     def _build_graph(self) -> StateGraph:
         """
-        Build self-healing LangGraph with error recovery and resilience.
+        Build self-healing LangGraph with analysis and insights.
         
         Flow: input → context → query_builder → validation → executor → result_check
         Result_check routes to:
           - query_builder (retry with error context, max 3 times)
           - insight_generator (empty results explanation)
-          - output (success with data)
+          - analysis → insight_generator → output (success with data)
         """
         workflow = StateGraph(AgentState)
         
@@ -102,6 +104,7 @@ class OrionGraph:
         workflow.add_node("validation", ValidationNode.execute)
         workflow.add_node("bigquery_executor", BigQueryExecutorNode.execute)
         workflow.add_node("result_check", result_check_node.execute)
+        workflow.add_node("analysis", analysis_node.execute)
         workflow.add_node("insight_generator", insight_generator_node.execute)
         workflow.add_node("output", OutputNode.execute)
         
@@ -138,13 +141,14 @@ class OrionGraph:
             "result_check",
             self._route_from_result_check,
             {
-                "query_builder": "query_builder",      # Retry with error context
-                "insight_generator": "insight_generator",  # Explain empty results
-                "output": "output"                      # Success
+                "query_builder": "query_builder",           # Retry with error context
+                "insight_generator": "insight_generator",   # Explain empty results
+                "analysis": "analysis"                      # Success - analyze data
             }
         )
         
-        # Both insight generator and output are terminal nodes
+        # Analysis and insight generation pipeline
+        workflow.add_edge("analysis", "insight_generator")
         workflow.add_edge("insight_generator", "output")
         workflow.add_edge("output", END)
         
@@ -163,7 +167,10 @@ class OrionGraph:
             "query_result": None,
             "query_error": None,
             "analysis_result": None,
+            "analysis_type": None,
             "has_empty_results": None,
+            "key_findings": None,
+            "visualization_path": None,
             "final_output": "",
             "retry_count": 0,
             "execution_time_sec": None,

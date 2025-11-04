@@ -772,10 +772,163 @@ class ResultCheckNode:
         }
 
 
+class AnalysisNode:
+    """
+    Performs statistical analysis on query results based on intent.
+    Supports: aggregation, trends, ranking, segmentation, growth rates.
+    """
+    
+    @staticmethod
+    def execute(state: AgentState) -> Dict[str, Any]:
+        """Analyze data based on query intent."""
+        df = state.get("query_result")
+        query_intent = state.get("query_intent", "general_query")
+        user_query = state.get("user_query", "").lower()
+        
+        if df is None or len(df) == 0:
+            return {}
+        
+        # Detect analysis type from query
+        analysis_type = AnalysisNode._detect_analysis_type(user_query, query_intent)
+        key_findings = []
+        
+        try:
+            if analysis_type == "ranking":
+                key_findings = AnalysisNode._analyze_ranking(df)
+            elif analysis_type == "trends":
+                key_findings = AnalysisNode._analyze_trends(df)
+            elif analysis_type == "segmentation":
+                key_findings = AnalysisNode._analyze_segmentation(df)
+            else:  # aggregation or general
+                key_findings = AnalysisNode._analyze_aggregation(df)
+            
+            return {
+                "analysis_type": analysis_type,
+                "key_findings": key_findings
+            }
+        except Exception:
+            # Fallback to basic stats
+            return {
+                "analysis_type": "aggregation",
+                "key_findings": [f"Returned {len(df)} rows"]
+            }
+    
+    @staticmethod
+    def _detect_analysis_type(query: str, intent: str) -> str:
+        """Detect type of analysis needed from query."""
+        if any(kw in query for kw in ["top", "best", "highest", "lowest", "rank"]):
+            return "ranking"
+        elif any(kw in query for kw in ["trend", "over time", "monthly", "growth", "change"]):
+            return "trends"
+        elif any(kw in query for kw in ["by", "segment", "group", "category", "breakdown"]):
+            return "segmentation"
+        elif intent in ["ranking", "trend_analysis"]:
+            return intent.replace("_analysis", "s")
+        else:
+            return "aggregation"
+    
+    @staticmethod
+    def _analyze_ranking(df: pd.DataFrame) -> list:
+        """Analyze ranked data and extract key insights."""
+        findings = []
+        
+        if len(df) == 0:
+            return findings
+        
+        # Find numeric column for ranking
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) == 0:
+            return [f"Top {min(5, len(df))} results"]
+        
+        value_col = numeric_cols[0]
+        total = df[value_col].sum()
+        
+        # Top contributor
+        if len(df) > 0:
+            top_val = df.iloc[0][value_col]
+            top_pct = (top_val / total * 100) if total > 0 else 0
+            findings.append(f"Top result: {top_pct:.1f}% of total")
+        
+        # Top 3 concentration
+        if len(df) >= 3:
+            top3_val = df.head(3)[value_col].sum()
+            top3_pct = (top3_val / total * 100) if total > 0 else 0
+            findings.append(f"Top 3 represent {top3_pct:.1f}% of total")
+        
+        return findings
+    
+    @staticmethod
+    def _analyze_trends(df: pd.DataFrame) -> list:
+        """Analyze time-series trends and growth rates."""
+        findings = []
+        
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) == 0 or len(df) < 2:
+            return findings
+        
+        value_col = numeric_cols[0]
+        values = df[value_col].values
+        
+        # Calculate growth rate
+        if len(values) >= 2:
+            first_val = values[0]
+            last_val = values[-1]
+            if first_val != 0:
+                growth = ((last_val - first_val) / first_val) * 100
+                findings.append(f"Overall change: {growth:+.1f}%")
+        
+        # Trend direction
+        if len(values) >= 3:
+            increases = sum(1 for i in range(1, len(values)) if values[i] > values[i-1])
+            if increases > len(values) * 0.6:
+                findings.append("Upward trend detected")
+            elif increases < len(values) * 0.4:
+                findings.append("Downward trend detected")
+        
+        return findings
+    
+    @staticmethod
+    def _analyze_segmentation(df: pd.DataFrame) -> list:
+        """Analyze segmented/grouped data."""
+        findings = []
+        
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) == 0:
+            return [f"{len(df)} segments identified"]
+        
+        value_col = numeric_cols[0]
+        
+        # Distribution stats
+        findings.append(f"{len(df)} segments, avg: {df[value_col].mean():.1f}")
+        
+        # Identify largest segment
+        if len(df) > 0:
+            max_idx = df[value_col].idxmax()
+            findings.append(f"Largest segment: {df.iloc[max_idx].iloc[0]}")
+        
+        return findings
+    
+    @staticmethod
+    def _analyze_aggregation(df: pd.DataFrame) -> list:
+        """Basic aggregation analysis."""
+        findings = []
+        
+        findings.append(f"{len(df)} rows returned")
+        
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) > 0:
+            col = numeric_cols[0]
+            total = df[col].sum()
+            avg = df[col].mean()
+            findings.append(f"Total: {total:.2f}, Average: {avg:.2f}")
+        
+        return findings
+
+
 class InsightGeneratorNode:
     """
-    Generates insights for empty query results using LLM.
-    Explains why no data was found instead of showing empty table.
+    Generates natural language insights from analyzed data using LLM.
+    Handles both empty results and data-rich analyses.
     """
     
     def __init__(self):
@@ -783,33 +936,35 @@ class InsightGeneratorNode:
         self.model = genai.GenerativeModel("gemini-2.0-flash")
     
     def execute(self, state: AgentState) -> Dict[str, Any]:
-        """Generate explanation for empty results."""
+        """Generate insights from empty results or data analysis."""
+        user_query = state.get("user_query", "")
+        has_empty_results = state.get("has_empty_results", False)
+        
+        # Handle empty results case
+        if has_empty_results:
+            return self._explain_empty_results(state)
+        
+        # Handle data analysis insights
+        return self._generate_business_insights(state)
+    
+    def _explain_empty_results(self, state: AgentState) -> Dict[str, Any]:
+        """Generate explanation for empty query results."""
         user_query = state.get("user_query", "")
         sql_query = state.get("sql_query", "")
         
-        prompt = f"""
-You are a helpful data analyst. A user asked a question but the query returned no results.
+        prompt = f"""A query returned no results. Explain why briefly (2 sentences max).
 
-User's question: {user_query}
+User question: {user_query}
+SQL: {sql_query}
 
-SQL query that was executed:
-{sql_query}
-
-The query executed successfully but returned 0 rows. Provide a brief, helpful explanation of why there might be no data. Consider:
-- Time period constraints that might exclude data
-- Filters that might be too restrictive
-- Data that might not exist in the dataset
-- Possible spelling or category mismatches
-
-Keep your response conversational and helpful (2-3 sentences max).
-"""
+Possible reasons: filters too restrictive, no data for time period, typos, etc."""
         
         try:
             response = self.model.generate_content(
                 prompt,
                 generation_config=genai.GenerationConfig(
                     temperature=0.3,
-                    max_output_tokens=200,
+                    max_output_tokens=150,
                 )
             )
             
@@ -819,33 +974,79 @@ Keep your response conversational and helpful (2-3 sentences max).
                 "analysis_result": insight,
                 "final_output": f"📭 No results found.\n\n💡 {insight}"
             }
-            
-        except Exception as e:
-            # Fallback if insight generation fails
+        except Exception:
             return {
                 "analysis_result": "No data found.",
                 "final_output": "📭 No results found. Try adjusting your query criteria."
             }
+    
+    def _generate_business_insights(self, state: AgentState) -> Dict[str, Any]:
+        """Generate actionable business insights from analysis."""
+        user_query = state.get("user_query", "")
+        analysis_type = state.get("analysis_type", "aggregation")
+        key_findings = state.get("key_findings", [])
+        df = state.get("query_result")
+        
+        # Build context from data
+        data_summary = f"Analysis type: {analysis_type}\n"
+        data_summary += f"Key findings:\n" + "\n".join([f"- {f}" for f in key_findings])
+        
+        if df is not None and len(df) <= 10:
+            data_summary += f"\n\nData preview:\n{df.to_string(index=False)}"
+        
+        prompt = f"""You are a business analyst. Generate actionable insights from this data analysis.
+
+User question: {user_query}
+
+{data_summary}
+
+Provide:
+1. Brief interpretation (1 sentence)
+2. Key insight or pattern (1 sentence)
+3. Actionable recommendation if applicable (1 sentence)
+
+Keep it concise and business-focused. Use bullet points."""
+        
+        try:
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    temperature=0.4,
+                    max_output_tokens=300,
+                )
+            )
+            
+            insights = response.text.strip() if response and hasattr(response, 'text') else "Analysis complete."
+            
+            return {
+                "analysis_result": insights
+            }
+        except Exception:
+            # Fallback to key findings
+            return {
+                "analysis_result": "\n".join(key_findings) if key_findings else "Analysis complete."
+            }
 
 
 class OutputNode:
-    """Formats and returns final output with metadata."""
+    """Formats and returns final output with metadata and visualizations."""
     
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
-        """Format output for display."""
-        # Check if final_output was already set (e.g., from META questions or insights)
+        """Format output for display with analysis insights."""
+        # Check if final_output was already set (e.g., from META questions or empty results)
         existing_output = state.get("final_output", "")
         df = state.get("query_result")
         error = state.get("query_error")
         exec_time = state.get("execution_time_sec")
         cost_gb = state.get("estimated_cost_gb")
         retry_count = state.get("retry_count", 0)
+        analysis_result = state.get("analysis_result")
+        key_findings = state.get("key_findings", [])
+        viz_path = state.get("visualization_path")
         
         if existing_output and existing_output.strip():
-            return {
-                "final_output": existing_output
-            }
+            return {"final_output": existing_output}
         
         # Build output with metadata
         output_parts = []
@@ -864,12 +1065,36 @@ class OutputNode:
             if df.empty:
                 output_parts.append("📭 No results found.")
             else:
+                # Show key findings if available
+                if key_findings:
+                    output_parts.append("📈 Key Findings:")
+                    for finding in key_findings:
+                        output_parts.append(f"  • {finding}")
+                    output_parts.append("")
+                
+                # Show data
                 output_parts.append(f"📊 Results ({len(df)} rows):\n")
                 output_parts.append(df.to_string(index=False))
+                
+                # Show insights if available
+                if analysis_result:
+                    output_parts.append(f"\n💡 Insights:\n{analysis_result}")
+                
+                # Show visualization if created
+                if viz_path:
+                    output_parts.append(f"\n📊 Chart saved to: {viz_path}")
             
             # Show execution time if available
             if exec_time is not None:
                 output_parts.append(f"\n⏱️  Executed in {exec_time:.2f}s")
+            
+            # Offer export options if data exists and not empty
+            if not df.empty:
+                output_parts.append("\n" + "─" * 50)
+                output_parts.append("\n💾 Export options:")
+                output_parts.append("  • Reply 'save csv' to export data as CSV")
+                output_parts.append("  • Reply 'chart [type]' to create visualization")
+                output_parts.append("    Types: bar, line, pie, scatter, box, candle")
         else:
             output_parts.append("No results generated.")
         
@@ -883,6 +1108,7 @@ input_node = InputNode()
 query_builder_node = QueryBuilderNode()
 bigquery_executor_node = BigQueryExecutorNode()
 result_check_node = ResultCheckNode()
+analysis_node = AnalysisNode()
 insight_generator_node = InsightGeneratorNode()
 output_node = OutputNode()
 

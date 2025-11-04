@@ -27,7 +27,10 @@ class AgentState(TypedDict):
     
     # Analysis
     analysis_result: Optional[str]
-    has_empty_results: Optional[bool]  # Track empty result sets
+    analysis_type: Optional[str]  # trends, ranking, segmentation, aggregation
+    has_empty_results: Optional[bool]
+    key_findings: Optional[list]  # Structured insights
+    visualization_path: Optional[str]  # Path to saved chart
     
     # Output
     final_output: str
@@ -35,5 +38,5 @@ class AgentState(TypedDict):
     # Metadata
     retry_count: int
     execution_time_sec: Optional[float]
-    error_history: Optional[list]  # Track errors for context propagation
+    error_history: Optional[list]
 
