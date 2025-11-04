@@ -29,7 +29,10 @@ class OrionGraph:
         self.app = self.graph.compile()
     
     def _route_from_context(self, state: AgentState) -> str:
-        """Route from context to query builder."""
+        """Route from context - skip to output if meta-question was detected early."""
+        # Check if InputNode already answered (fast-path meta-questions)
+        if state.get("final_output"):
+            return "output"
         return "query_builder"
     
     def _route_from_query_builder(self, state: AgentState) -> str:
@@ -114,7 +117,10 @@ class OrionGraph:
         workflow.add_conditional_edges(
             "context",
             self._route_from_context,
-            {"query_builder": "query_builder"}
+            {
+                "query_builder": "query_builder",
+                "output": "output"  # Fast-path for instant meta-questions
+            }
         )
         workflow.add_conditional_edges(
             "query_builder",

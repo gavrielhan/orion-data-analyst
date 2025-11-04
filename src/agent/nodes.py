@@ -161,6 +161,15 @@ class ValidationNode:
         if not sql_query:
             return {"validation_passed": False, "query_error": "No SQL query to validate"}
         
+        # Safety check: ensure this isn't a META response that slipped through
+        sql_upper = sql_query.upper().strip()
+        if sql_upper.startswith("META:") or sql_upper.startswith("SQL:"):
+            return {
+                "validation_passed": False,
+                "query_error": "Invalid SQL: Response prefix detected. Please retry.",
+                "retry_count": state.get("retry_count", 0) + 1
+            }
+        
         # Security check: Block dangerous operations
         sql_upper = sql_query.upper()
         for keyword in cls.BLOCKED_KEYWORDS:
@@ -206,13 +215,30 @@ class ValidationNode:
 class InputNode:
     """Receives and normalizes user query."""
     
+    # Quick meta-question responses (no LLM needed)
+    META_RESPONSES = {
+        "help": "I can analyze e-commerce data from BigQuery. Ask me about sales, customers, products, orders, trends, and more. Try: 'show me top 10 products' or 'analyze sales by category'",
+        "what can you do": "I can query the bigquery-public-data.thelook_ecommerce dataset with tables: orders, order_items, products, and users. I can analyze trends, create visualizations, segment customers, detect anomalies, and answer questions about your e-commerce data.",
+        "hello": "Hello! I'm Orion, your AI data analyst. I can help you analyze e-commerce data. What would you like to know?",
+        "hi": "Hi! I'm Orion. Ask me anything about orders, products, customers, or sales data.",
+        "capabilities": "I can query BigQuery, generate SQL, create charts (bar, line, pie, scatter, box, candle), perform RFM analysis, detect outliers, compare time periods, and provide business insights.",
+    }
+    
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Process user input and classify intent."""
         user_query = state.get("user_query", "")
+        query_lower = user_query.lower().strip()
         
-        # Simple intent classification for MVP
-        query_lower = user_query.lower()
+        # Fast path: Check for common meta-questions (instant response)
+        for pattern, response in InputNode.META_RESPONSES.items():
+            if pattern in query_lower:
+                return {
+                    "query_intent": "meta_question",
+                    "final_output": response
+                }
+        
+        # Simple intent classification for data queries
         if any(keyword in query_lower for keyword in ["sales", "revenue", "total"]):
             intent = "aggregation"
         elif any(keyword in query_lower for keyword in ["top", "best", "highest"]):
@@ -579,6 +605,17 @@ Your response (MUST start with META: or SQL:):
             if sql_query.startswith("```"):
                 sql_query = sql_query[3:]
             sql_query = sql_query.strip().rstrip("`")
+            
+            # Final safety check: ensure we didn't leave any prefixes in the SQL
+            sql_query_upper = sql_query.upper().strip()
+            if sql_query_upper.startswith("SQL:"):
+                sql_query = sql_query[4:].strip()
+            elif sql_query_upper.startswith("META:"):
+                # This should have been caught earlier, but as a final safety measure
+                return {
+                    "final_output": sql_query[5:].strip(),
+                    "retry_count": 0
+                }
             
             # Post-process: Fix common mistakes automatically
             # Replace patterns like "bigquery.table" or "FROM bigquery.table" with correct path
