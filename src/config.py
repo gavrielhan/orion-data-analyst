@@ -23,6 +23,7 @@ class Config:
         
         # Gemini API
         self.gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_AI_KEY")
+        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
         
         # BigQuery settings
         self.bigquery_dataset = os.getenv(

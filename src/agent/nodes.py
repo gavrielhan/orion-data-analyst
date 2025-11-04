@@ -273,8 +273,8 @@ class QueryBuilderNode:
     def __init__(self):
         # Initialize Gemini API
         genai.configure(api_key=config.gemini_api_key)
-        # Use Gemini 2.0 Flash for faster responses
-        self.model = genai.GenerativeModel("gemini-2.0-flash")
+        # Use configured Gemini model (default: gemini-2.0-flash-exp)
+        self.model = genai.GenerativeModel(config.gemini_model)
         
         # Rate limiter: 60 calls per minute (Gemini free tier limit)
         from src.utils.rate_limiter import RateLimiter
@@ -1173,7 +1173,8 @@ class InsightGeneratorNode:
     
     def __init__(self):
         genai.configure(api_key=config.gemini_api_key)
-        self.model = genai.GenerativeModel("gemini-2.0-flash")
+        # Use configured Gemini model (default: gemini-2.0-flash-exp)
+        self.model = genai.GenerativeModel(config.gemini_model)
         
         # Shared rate limiter with QueryBuilderNode
         from src.utils.rate_limiter import RateLimiter

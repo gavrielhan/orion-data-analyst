@@ -53,6 +53,9 @@ def validate_config():
         print("# Gemini AI API Key")
         print("GEMINI_API_KEY=your-gemini-api-key-here")
         print("")
+        print("# Optional: Gemini Model (default: gemini-2.0-flash-exp)")
+        print("GEMINI_MODEL=gemini-2.0-flash-exp")
+        print("")
         print("# Optional BigQuery Settings")
         print("BIGQUERY_DATASET=bigquery-public-data.thelook_ecommerce")
         print("─" * 60)
@@ -191,6 +194,7 @@ def main():
     
     # Show successful connection
     print(OutputFormatter.success(f"Connected to: {config.bigquery_dataset}"))
+    print(OutputFormatter.info(f"Using Gemini model: {config.gemini_model}"))
     print(OutputFormatter.format("💡 **Ask me anything about the e-commerce data!**"))
     print("   Commands: 'exit', 'save session', 'load session [path]', 'clear cache'")
     print(OutputFormatter.format("   💾 Tip: Results are cached for faster repeated queries\n"))
