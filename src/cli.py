@@ -56,6 +56,9 @@ def validate_config():
         print("# Optional: Gemini Model (default: gemini-2.0-flash-exp)")
         print("GEMINI_MODEL=gemini-2.0-flash-exp")
         print("")
+        print("# Optional: Output Directory (default: ~/orion_results)")
+        print("# ORION_OUTPUT_DIR=/path/to/your/output")
+        print("")
         print("# Optional BigQuery Settings")
         print("BIGQUERY_DATASET=bigquery-public-data.thelook_ecommerce")
         print("─" * 60)
@@ -84,7 +87,7 @@ def validate_config():
 
 def save_session(conversation_history: list, session_name: str = None):
     """Save conversation history to file."""
-    sessions_dir = Path.home() / "Desktop" / "results" / "sessions"
+    sessions_dir = Path(config.output_directory) / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     
     if not session_name:
@@ -195,6 +198,7 @@ def main():
     # Show successful connection
     print(OutputFormatter.success(f"Connected to: {config.bigquery_dataset}"))
     print(OutputFormatter.info(f"Using Gemini model: {config.gemini_model}"))
+    print(OutputFormatter.info(f"Results directory: {config.output_directory}"))
     print(OutputFormatter.format("💡 **Ask me anything about the e-commerce data!**"))
     print("   Commands: 'exit', 'save session', 'load session [path]', 'clear cache'")
     print(OutputFormatter.format("   💾 Tip: Results are cached for faster repeated queries\n"))

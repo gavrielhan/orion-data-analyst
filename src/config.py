@@ -32,6 +32,10 @@ class Config:
         )
         self.max_query_rows = int(os.getenv("MAX_QUERY_ROWS", "10000"))
         self.query_timeout = int(os.getenv("QUERY_TIMEOUT", "300"))
+        
+        # Output directory for results (charts, CSV, sessions)
+        default_output_dir = str(Path.home() / "orion_results")
+        self.output_directory = os.getenv("ORION_OUTPUT_DIR", default_output_dir)
     
     def validate(self) -> list[str]:
         """Validate configuration and return list of missing fields."""

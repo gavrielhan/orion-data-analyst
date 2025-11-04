@@ -11,17 +11,19 @@ from typing import Optional, Tuple
 class Visualizer:
     """
     Creates and saves various chart types for data analysis.
-    Saves all visualizations to ~/Desktop/results/ directory.
+    Saves all visualizations to configured output directory.
     """
     
     def __init__(self):
+        from src.config import config
+        
         # Set style for professional-looking charts
         sns.set_style("whitegrid")
         plt.rcParams['figure.figsize'] = (10, 6)
         plt.rcParams['font.size'] = 10
         
-        # Create results directory on Desktop
-        self.results_dir = Path.home() / "Desktop" / "results"
+        # Create results directory from config
+        self.results_dir = Path(config.output_directory)
         self.results_dir.mkdir(parents=True, exist_ok=True)
     
     def _generate_filename(self, chart_type: str) -> Path:
