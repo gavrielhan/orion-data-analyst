@@ -38,6 +38,83 @@ def validate_config():
         sys.exit(1)
 
 
+def handle_export_options(df, visualizer, user_query_lower):
+    """
+    Handle export options sequentially.
+    Returns True if exports were requested in the original query.
+    """
+    if df is None or len(df) == 0:
+        return False
+    
+    # Check if user already specified exports in their query
+    wants_csv = any(kw in user_query_lower for kw in ["save csv", "export csv", "as csv", "to csv"])
+    wants_chart = "chart" in user_query_lower
+    chart_type = None
+    
+    # Extract chart type if specified
+    if wants_chart:
+        for ctype in ["bar", "line", "pie", "scatter", "box", "candle"]:
+            if ctype in user_query_lower:
+                chart_type = ctype
+                break
+        if not chart_type:
+            chart_type = "bar"  # Default
+    
+    # If already specified, handle immediately
+    if wants_csv or wants_chart:
+        if wants_csv:
+            print("\n💾 Exporting to CSV...")
+            filepath = visualizer.save_csv(df)
+            print(f"✅ CSV saved to: {filepath}")
+        
+        if wants_chart:
+            print(f"\n📊 Creating {chart_type} chart...")
+            filepath = visualizer.create_chart(df, chart_type)
+            if filepath:
+                print(f"✅ Chart saved to: {filepath}")
+            else:
+                print("❌ Failed to create chart.")
+        
+        return True
+    
+    # Otherwise, ask sequentially
+    # Ask about CSV first
+    csv_response = input("\n💾 Would you like to save the results as CSV? (type 'save csv' or 'no'): ").strip().lower()
+    
+    if csv_response in ["save csv", "yes", "y", "csv"]:
+        print("\n💾 Exporting to CSV...")
+        filepath = visualizer.save_csv(df)
+        print(f"✅ CSV saved to: {filepath}")
+    
+    # Ask about chart second
+    chart_response = input("\n📊 Would you like to create a chart? (type 'chart [type]' or 'no')\n    Types: bar, line, pie, scatter, box, candle\n    → ").strip().lower()
+    
+    if chart_response.startswith("chart "):
+        chart_type = chart_response.replace("chart ", "").strip()
+        print(f"\n📊 Creating {chart_type} chart...")
+        filepath = visualizer.create_chart(df, chart_type)
+        if filepath:
+            print(f"✅ Chart saved to: {filepath}")
+        else:
+            print("❌ Failed to create chart.")
+    elif chart_response in ["yes", "y"] or any(ct in chart_response for ct in ["bar", "line", "pie", "scatter", "box", "candle"]):
+        # Try to extract chart type from response
+        chart_type = "bar"  # Default
+        for ctype in ["bar", "line", "pie", "scatter", "box", "candle"]:
+            if ctype in chart_response:
+                chart_type = ctype
+                break
+        
+        print(f"\n📊 Creating {chart_type} chart...")
+        filepath = visualizer.create_chart(df, chart_type)
+        if filepath:
+            print(f"✅ Chart saved to: {filepath}")
+        else:
+            print("❌ Failed to create chart.")
+    
+    return False
+
+
 def main():
     """Main CLI entry point with visualization and export support."""
     print_banner()
@@ -49,7 +126,6 @@ def main():
     
     agent = OrionGraph()
     visualizer = Visualizer()
-    last_result = None  # Store last result for viz/export commands
     
     while True:
         try:
@@ -63,43 +139,17 @@ def main():
                 print("\n👋 Goodbye!")
                 break
             
-            # Check if it's a visualization command
-            query_lower = user_query.lower()
-            if query_lower.startswith("chart ") and last_result:
-                chart_type = query_lower.replace("chart ", "").strip()
-                df = last_result.get("query_result")
-                
-                if df is not None and len(df) > 0:
-                    print(f"\n📊 Creating {chart_type} chart...")
-                    filepath = visualizer.create_chart(df, chart_type)
-                    
-                    if filepath:
-                        print(f"✅ Chart saved to: {filepath}")
-                    else:
-                        print("❌ Failed to create chart. Check data format.")
-                else:
-                    print("❌ No data available for visualization.")
-                continue
-            
-            # Check if it's a CSV export command
-            if query_lower in ["save csv", "export csv", "csv"] and last_result:
-                df = last_result.get("query_result")
-                
-                if df is not None and len(df) > 0:
-                    print("\n💾 Exporting to CSV...")
-                    filepath = visualizer.save_csv(df)
-                    print(f"✅ CSV saved to: {filepath}")
-                else:
-                    print("❌ No data available to export.")
-                continue
-            
-            # Execute agent for regular queries
+            # Execute agent for queries
             print("\n🤖 Orion thinking...")
             result = agent.invoke(user_query)
-            last_result = result  # Save for viz/export commands
             
             # Display output
             print(result.get("final_output", "No output generated"))
+            
+            # Handle export options if there's data
+            df = result.get("query_result")
+            if df is not None and len(df) > 0:
+                handle_export_options(df, visualizer, user_query.lower())
             
         except KeyboardInterrupt:
             print("\n\n👋 Goodbye!")

@@ -1087,14 +1087,6 @@ class OutputNode:
             # Show execution time if available
             if exec_time is not None:
                 output_parts.append(f"\n⏱️  Executed in {exec_time:.2f}s")
-            
-            # Offer export options if data exists and not empty
-            if not df.empty:
-                output_parts.append("\n" + "─" * 50)
-                output_parts.append("\n💾 Export options:")
-                output_parts.append("  • Reply 'save csv' to export data as CSV")
-                output_parts.append("  • Reply 'chart [type]' to create visualization")
-                output_parts.append("    Types: bar, line, pie, scatter, box, candle")
         else:
             output_parts.append("No results generated.")
         
