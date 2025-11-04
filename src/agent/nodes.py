@@ -324,11 +324,15 @@ Generate clean, valid SQL queries only.
         query_error = state.get("query_error")
         previous_sql = state.get("sql_query", "")
         retry_count = state.get("retry_count", 0)
+        error_history = state.get("error_history", []) or []
         
         if query_error and previous_sql:
-            # This is a retry - include the error and previous query in the prompt
+            # Build error context from history for better self-healing
+            error_context = "\n".join([f"- Attempt {i+1}: {err}" for i, err in enumerate(error_history)])
+            
+            # This is a retry - include full error context for self-healing
             prompt = f"""
-You are a SQL expert. A previous SQL query you generated failed with a BigQuery error. Please fix it.
+You are a SQL expert. Previous SQL queries failed. Learn from these errors and fix the query.
 
 {context}
 
@@ -337,8 +341,10 @@ Original user query: {user_query}
 Previous SQL query that failed:
 {previous_sql}
 
-BigQuery error message:
-{query_error}
+Error history (most recent last):
+{error_context}
+
+This is retry attempt {retry_count + 1} of 3. Carefully analyze the error pattern and generate a corrected query.
 
 CRITICAL RULES:
 - Fix the SQL query based on the error message above
@@ -727,18 +733,114 @@ class BigQueryExecutorNode:
             pass  # Silent fail on logging errors
 
 
+class ResultCheckNode:
+    """
+    Evaluates query execution results and determines next action.
+    Routes to appropriate node based on: errors, empty results, or success.
+    """
+    
+    @staticmethod
+    def execute(state: AgentState) -> Dict[str, Any]:
+        """Analyze execution results and set routing flags."""
+        query_error = state.get("query_error")
+        query_result = state.get("query_result")
+        retry_count = state.get("retry_count", 0)
+        
+        # Track error history for context propagation
+        error_history = state.get("error_history", []) or []
+        if query_error and query_error not in error_history:
+            error_history.append(query_error)
+        
+        # Case 1: Query execution error - retry if under limit
+        if query_error and retry_count < 3:
+            return {
+                "error_history": error_history,
+                "has_empty_results": False
+            }
+        
+        # Case 2: Check for empty results (successful query but no data)
+        if query_result is not None and len(query_result) == 0:
+            return {
+                "has_empty_results": True,
+                "error_history": error_history
+            }
+        
+        # Case 3: Success with data
+        return {
+            "has_empty_results": False,
+            "error_history": error_history
+        }
+
+
+class InsightGeneratorNode:
+    """
+    Generates insights for empty query results using LLM.
+    Explains why no data was found instead of showing empty table.
+    """
+    
+    def __init__(self):
+        genai.configure(api_key=config.gemini_api_key)
+        self.model = genai.GenerativeModel("gemini-2.0-flash")
+    
+    def execute(self, state: AgentState) -> Dict[str, Any]:
+        """Generate explanation for empty results."""
+        user_query = state.get("user_query", "")
+        sql_query = state.get("sql_query", "")
+        
+        prompt = f"""
+You are a helpful data analyst. A user asked a question but the query returned no results.
+
+User's question: {user_query}
+
+SQL query that was executed:
+{sql_query}
+
+The query executed successfully but returned 0 rows. Provide a brief, helpful explanation of why there might be no data. Consider:
+- Time period constraints that might exclude data
+- Filters that might be too restrictive
+- Data that might not exist in the dataset
+- Possible spelling or category mismatches
+
+Keep your response conversational and helpful (2-3 sentences max).
+"""
+        
+        try:
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    temperature=0.3,
+                    max_output_tokens=200,
+                )
+            )
+            
+            insight = response.text.strip() if response and hasattr(response, 'text') else "No data found matching your criteria."
+            
+            return {
+                "analysis_result": insight,
+                "final_output": f"📭 No results found.\n\n💡 {insight}"
+            }
+            
+        except Exception as e:
+            # Fallback if insight generation fails
+            return {
+                "analysis_result": "No data found.",
+                "final_output": "📭 No results found. Try adjusting your query criteria."
+            }
+
+
 class OutputNode:
     """Formats and returns final output with metadata."""
     
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Format output for display."""
-        # Check if final_output was already set (e.g., from META questions)
+        # Check if final_output was already set (e.g., from META questions or insights)
         existing_output = state.get("final_output", "")
         df = state.get("query_result")
         error = state.get("query_error")
         exec_time = state.get("execution_time_sec")
         cost_gb = state.get("estimated_cost_gb")
+        retry_count = state.get("retry_count", 0)
         
         if existing_output and existing_output.strip():
             return {
@@ -749,14 +851,18 @@ class OutputNode:
         output_parts = []
         
         if error:
-            output_parts.append(f"❌ Error: {error}")
+            # Show retry attempts if any
+            if retry_count > 0:
+                output_parts.append(f"❌ Error (after {retry_count} retries): {error}")
+            else:
+                output_parts.append(f"❌ Error: {error}")
         elif df is not None:
             # Show cost estimate if available
             if cost_gb is not None and cost_gb > 0:
                 output_parts.append(f"💰 Estimated cost: {cost_gb:.4f} GB scanned")
             
             if df.empty:
-                output_parts.append("No results found.")
+                output_parts.append("📭 No results found.")
             else:
                 output_parts.append(f"📊 Results ({len(df)} rows):\n")
                 output_parts.append(df.to_string(index=False))
@@ -776,5 +882,7 @@ class OutputNode:
 input_node = InputNode()
 query_builder_node = QueryBuilderNode()
 bigquery_executor_node = BigQueryExecutorNode()
+result_check_node = ResultCheckNode()
+insight_generator_node = InsightGeneratorNode()
 output_node = OutputNode()
 

@@ -27,6 +27,7 @@ class AgentState(TypedDict):
     
     # Analysis
     analysis_result: Optional[str]
+    has_empty_results: Optional[bool]  # Track empty result sets
     
     # Output
     final_output: str
@@ -34,4 +35,5 @@ class AgentState(TypedDict):
     # Metadata
     retry_count: int
     execution_time_sec: Optional[float]
+    error_history: Optional[list]  # Track errors for context propagation
 
