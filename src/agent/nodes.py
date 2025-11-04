@@ -33,8 +33,10 @@ class ContextNode:
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
+        import sys
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → ContextNode: Loading schema..."), end="\r")
+            print(OutputFormatter.info("  → Loading schema..."))
+            sys.stdout.flush()
         
         cache_timestamp = state.get("schema_cache_timestamp", 0)
         current_time = time.time()
@@ -137,8 +139,10 @@ class ApprovalNode:
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
+        import sys
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → ApprovalNode: Checking cost..."), end="\r")
+            print(OutputFormatter.info("  → Checking cost..."))
+            sys.stdout.flush()
         
         estimated_cost = state.get("estimated_cost_gb", 0)
         validation_passed = state.get("validation_passed", False)
@@ -171,8 +175,10 @@ class ValidationNode:
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
+        import sys
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → ValidationNode: Checking SQL..."), end="\r")
+            print(OutputFormatter.info("  → Validating SQL..."))
+            sys.stdout.flush()
         
         sql_query = state.get("sql_query", "")
         
@@ -248,8 +254,10 @@ class InputNode:
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
+        import sys
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → InputNode: Processing query..."), end="\r")
+            print(OutputFormatter.info("  → Processing query..."))
+            sys.stdout.flush()
         
         user_query = state.get("user_query", "")
         query_lower = user_query.lower().strip()
@@ -411,17 +419,38 @@ Generate clean, valid SQL queries only.
     def execute(self, state: AgentState) -> Dict[str, Any]:
         """Generate SQL query from user query or answer meta-question."""
         from src.utils.formatter import OutputFormatter
+        import sys
+        
+        # DEBUG: Show state at start
+        discovery_result = state.get("discovery_result")
+        discovery_query = state.get("discovery_query")
+        sql_query = state.get("sql_query", "")
+        retry_count = state.get("retry_count", 0)
+        query_error = state.get("query_error")
+        discovery_count = state.get("discovery_count", 0)
+        
+        print(f"\n🔍 [QueryBuilderNode] START")
+        print(f"   discovery_result: {bool(discovery_result)}")
+        print(f"   discovery_query: {bool(discovery_query)}")
+        print(f"   sql_query: {bool(sql_query)}")
+        print(f"   retry_count: {retry_count}")
+        print(f"   discovery_count: {discovery_count}")
+        print(f"   query_error: {bool(query_error)}")
+        if query_error:
+            print(f"   error_msg: {query_error[:100]}")
+        sys.stdout.flush()
         
         # Progress indicator
         if state.get("_verbose"):
-            discovery_result = state.get("discovery_result")
-            retry_count = state.get("retry_count", 0)
             if discovery_result:
-                print(OutputFormatter.info("  → Generating SQL with discovered data..."), end="\r")
+                print(OutputFormatter.info("  → Generating SQL with discovered data..."))
+                sys.stdout.flush()
             elif retry_count > 0:
-                print(OutputFormatter.info(f"  → Generating SQL (retry {retry_count})..."), end="\r")
+                print(OutputFormatter.info(f"  → Generating SQL (retry {retry_count})..."))
+                sys.stdout.flush()
             else:
-                print(OutputFormatter.info("  → Analyzing query..."), end="\r")
+                print(OutputFormatter.info("  → Analyzing query..."))
+                sys.stdout.flush()
         
         user_query = state.get("user_query", "")
         context = self._get_schema_context()
@@ -497,9 +526,12 @@ Fixed SQL Query:
             
             # Add discovery results if available
             discovery_result = state.get("discovery_result")
+            discovery_count = state.get("discovery_count", 0)
             discovery_context = ""
             if discovery_result:
-                discovery_context = f"\n\nDISCOVERY RESULTS:\nYou previously discovered these data values:\n{discovery_result}\n\nNow generate the main SQL query using this information.\n"
+                discovery_context = f"\n\nDISCOVERY RESULTS:\nYou previously discovered these data values:\n{discovery_result}\n\nCRITICAL: You MUST now generate the main SQL query using this information. Do NOT generate another DISCOVER query - use the discovery results above to generate SQL directly.\n"
+            elif discovery_count > 0:
+                discovery_context = f"\n\n⚠️ WARNING: You have already generated {discovery_count} discovery queries. You MUST generate SQL now, not another DISCOVER query.\n"
             
             prompt = f"""
 You are an intelligent data analysis assistant named Orion. Your role is to help users query and analyze e-commerce data.
@@ -517,13 +549,21 @@ Carefully determine what the user is asking:
 - If they're asking about YOUR CAPABILITIES, WHAT datasets/tables/columns are AVAILABLE, or general HELP → This is a META question about you
 - If they're asking about ACTUAL DATA (specific values, records, numbers, calculations from the database) → This needs a SQL query
 
-DATA DISCOVERY APPROACH (USE THIS WHEN UNCERTAIN):
-If you're UNCERTAIN about data values (e.g., "how are genders encoded?", "what status values exist?"):
-1. First generate a DISCOVERY query to explore the data
+DATA DISCOVERY APPROACH (USE SPARINGLY):
+CRITICAL: If discovery results are provided above, DO NOT generate another DISCOVER query - use those results to generate SQL directly.
+
+PREFER DIRECT SQL GENERATION:
+- For simple queries like "males and females count", use common encodings directly:
+  * Gender: 'M' for male, 'F' for female
+  * Status: 'Complete', 'Shipped', 'Processing', etc.
+- Only use DISCOVER if you're truly uncertain about the exact encoding AND the query explicitly requires it
+
+If you're UNCERTAIN about data values AND no discovery results exist above:
+1. Generate a DISCOVERY query to explore the data
 2. Use DISTINCT to find unique values in the relevant column
 3. Limit to 20 rows for fast results
 
-DISCOVERY QUERY FORMAT:
+DISCOVERY QUERY FORMAT (ONLY if no discovery results exist above AND truly uncertain):
 When you need to discover data values, respond with "DISCOVER:" prefix:
 Example: "DISCOVER: SELECT DISTINCT gender FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
 
@@ -541,8 +581,9 @@ EXAMPLES OF SQL QUESTIONS:
 - "what is the most expensive product?" → Direct SQL
 - "how many orders were placed?" → Direct SQL
 - "show me the top 10 customers" → Direct SQL
-- "how many females are in orders?" → DISCOVER gender values first, then SQL
-- "what are the order statuses?" → DISCOVER status values first, then SQL
+- "show me the males and females count per year" → Direct SQL (use gender IN ('M', 'F'))
+- "how many females are in orders?" → Direct SQL (use gender = 'F')
+- "what are the order statuses?" → DISCOVER status values first (if truly uncertain), then SQL
 
 RESPONSE FORMAT (CRITICAL - FOLLOW EXACTLY):
 You MUST respond in one of THREE formats. Your response MUST start with one of these prefixes:
@@ -578,7 +619,19 @@ Your response (MUST start with META: or SQL:):
         
         try:
             # Rate limiting to prevent API quota exhaustion
-            wait_time = self.rate_limiter.wait_if_needed()
+            # Check status first
+            status = self.rate_limiter.get_status()
+            if state.get("_verbose"):
+                print(f"🔍 [QueryBuilderNode] Rate limiter status: {status['current_calls']}/{status['max_calls']} calls used")
+                sys.stdout.flush()
+            
+            wait_time = self.rate_limiter.wait_if_needed(verbose=state.get("_verbose", False))
+            if wait_time:
+                print(f"⏱️  [QueryBuilderNode] Waited {wait_time:.1f}s for rate limit")
+                sys.stdout.flush()
+            
+            print(f"🔍 [QueryBuilderNode] Calling Gemini API...")
+            sys.stdout.flush()
             
             response = self.model.generate_content(
                 prompt,
@@ -645,11 +698,37 @@ Your response (MUST start with META: or SQL:):
             
             # Check if this is a DISCOVERY query (needs to explore data first)
             if response_upper.startswith("DISCOVER:"):
+                # CRITICAL: If discovery_result already exists, don't allow another discovery - force SQL generation
+                discovery_result = state.get("discovery_result")
+                if discovery_result:
+                    # Discovery already done - LLM should use it, not generate another
+                    print(f"🔍 [QueryBuilderNode] RETURN: Error - Discovery already completed (retry_count={state.get('retry_count', 0) + 1})")
+                    sys.stdout.flush()
+                    return {
+                        "query_error": "Discovery already completed. Please generate SQL using the discovery results provided above.",
+                        "retry_count": state.get("retry_count", 0) + 1
+                    }
+                
                 discovery_query = response_text[9:].strip()
                 if discovery_query:
+                    # Prevent infinite discovery loops - limit to 2 discovery queries per query
+                    discovery_count = state.get("discovery_count", 0)
+                    if discovery_count >= 2:
+                        # Too many discovery queries - force SQL generation
+                        print(f"🔍 [QueryBuilderNode] RETURN: Error - Too many discovery queries (discovery_count={discovery_count})")
+                        sys.stdout.flush()
+                        return {
+                            "query_error": "Too many discovery queries. Please generate SQL directly using available schema information.",
+                            "retry_count": state.get("retry_count", 0) + 1
+                        }
+                    
+                    print(f"🔍 [QueryBuilderNode] RETURN: Discovery query (discovery_count={discovery_count + 1})")
+                    sys.stdout.flush()
                     return {
                         "discovery_query": discovery_query,
-                        "retry_count": 0  # Reset retry, we'll come back after discovery
+                        "discovery_result": None,  # Clear old discovery result when starting new discovery
+                        "discovery_count": discovery_count + 1  # Track discovery count
+                        # NOTE: Don't reset retry_count here - it needs to persist across discovery
                     }
             
             # Check if this is a SQL question response
@@ -792,9 +871,16 @@ Your response (MUST start with META: or SQL:):
                         "retry_count": state.get("retry_count", 0) + 1
                     }
             
+            print(f"🔍 [QueryBuilderNode] RETURN: SQL generated successfully")
+            print(f"   SQL length: {len(sql_query)} chars")
+            print(f"   SQL preview: {sql_query[:100]}...")
+            sys.stdout.flush()
+            
             return {
                 "sql_query": sql_query,
                 "discovery_result": None,  # Clear discovery result after using it
+                "discovery_query": None,  # Clear any leftover discovery query
+                "discovery_count": 0,  # Reset discovery count after successful SQL generation
                 "query_error": None  # Clear any previous errors
             }
         except Exception as e:
@@ -808,24 +894,43 @@ Your response (MUST start with META: or SQL:):
                 }
             
             # Check for rate limit errors (429)
+            # CRITICAL: Rate limit errors should NOT retry - output immediately
+            # Retrying just makes another API call which hits rate limit again
             if "429" in error_str or "Resource exhausted" in error_str or "rate limit" in error_str.lower():
-                if retry_count < 2:  # Only 2 retries, not 3
-                    # Aggressive exponential backoff: 15s, 45s (total 60s)
-                    import time
-                    wait_seconds = 15 * (3 ** retry_count)  # 15s, then 45s
-                    if state.get("_verbose"):
-                        from src.utils.formatter import OutputFormatter
-                        print(OutputFormatter.warning(f"\n⏳ Rate limit hit! Waiting {wait_seconds}s to comply with API limits..."))
-                    time.sleep(wait_seconds)
-                    return {
-                        "query_error": f"Rate limit exceeded. Waited {wait_seconds}s, retrying... (attempt {retry_count + 1}/2)",
-                        "retry_count": retry_count + 1
-                    }
+                print(f"🔍 [QueryBuilderNode] Rate limit error detected from API")
+                sys.stdout.flush()
+                
+                # Check if our rate limiter shows low usage but API still says rate limited
+                # This means quota was exhausted outside this session (previous sessions, other apps, etc.)
+                status = self.rate_limiter.get_status()
+                
+                if status["current_calls"] < 5:
+                    # Our rate limiter shows low usage, but API is rate limited
+                    # This means the global Gemini quota is exhausted - we need to wait the full window
+                    print(f"⏱️  Global Gemini API quota exhausted (not from this session).")
+                    print(f"⏱️  Waiting 60 seconds for quota to reset...")
+                    sys.stdout.flush()
+                    
+                    # Wait the full 60 seconds to let Gemini's quota reset
+                    for i in range(60, 0, -10):
+                        print(f"⏱️  Waiting {i} seconds... (press Ctrl+C to cancel)", end="\r")
+                        sys.stdout.flush()
+                        time.sleep(min(10, i))
+                    print("\n⏱️  Wait complete. Quota should be reset now.")
+                    sys.stdout.flush()
+                    
+                    # Reset our rate limiter to reflect that we've waited
+                    self.rate_limiter.reset()
                 else:
-                    return {
-                        "query_error": "⚠️ Rate limit exceeded. Gemini API allows 60 requests/minute. Please wait 60 seconds before trying again.",
-                        "retry_count": retry_count
-                    }
+                    # Our rate limiter also shows high usage - just reset it
+                    self.rate_limiter.reset()
+                    print(f"⏱️  Rate limiter reset - quota exhausted. Please wait 60 seconds.")
+                    sys.stdout.flush()
+                
+                return {
+                    "query_error": "⚠️ Rate limit exceeded. Gemini API quota exhausted.\n   Waited 60 seconds for quota reset. Please try again now.\n   If still failing, wait another 60 seconds or check if other apps are using your API key.",
+                    "retry_count": retry_count  # Don't increment - we're not retrying
+                }
             
             # Other errors
             return {
@@ -841,22 +946,36 @@ class BigQueryExecutorNode:
     def execute(state: AgentState) -> Dict[str, Any]:
         """Execute SQL query or discovery query and return results."""
         from src.utils.formatter import OutputFormatter
+        import sys
         
         # Check if this is a discovery query
         discovery_query = state.get("discovery_query", "")
         sql_query = state.get("sql_query", "")
         is_discovery = bool(discovery_query and not sql_query)
         
+        print(f"\n🔍 [BigQueryExecutorNode] START")
+        print(f"   is_discovery: {is_discovery}")
+        print(f"   discovery_query: {bool(discovery_query)}")
+        print(f"   sql_query: {bool(sql_query)}")
+        if discovery_query:
+            print(f"   discovery_query preview: {discovery_query[:100]}...")
+        if sql_query:
+            print(f"   sql_query preview: {sql_query[:100]}...")
+        sys.stdout.flush()
+        
         # Progress indicator
         if state.get("_verbose"):
             if is_discovery:
-                print(OutputFormatter.info("  → Discovering data values..."), end="\r")
+                print(OutputFormatter.info("  → Discovering data values..."))
             else:
-                print(OutputFormatter.info("  → Executing query on BigQuery..."), end="\r")
+                print(OutputFormatter.info("  → Executing query on BigQuery..."))
+            sys.stdout.flush()
         
         query_to_execute = discovery_query if is_discovery else sql_query
         
         if not query_to_execute:
+            print(f"🔍 [BigQueryExecutorNode] RETURN: Error - No query to execute")
+            sys.stdout.flush()
             return {
                 "query_error": "No SQL query to execute",
                 "query_result": None
@@ -886,18 +1005,34 @@ class BigQueryExecutorNode:
                 for col in df.columns:
                     values = df[col].dropna().unique().tolist()[:20]  # Limit to 20 values
                     discovery_result += f"  {col}: {', '.join(map(str, values))}\n"
+                
+                import sys
+                if state.get("_verbose"):
+                    print(OutputFormatter.success(f"  → Discovery completed: {len(df.columns)} columns found"))
+                    sys.stdout.flush()
+                
+                print(f"🔍 [BigQueryExecutorNode] RETURN: Discovery completed")
+                print(f"   discovery_result length: {len(discovery_result)} chars")
+                print(f"   discovery_query cleared: True")
+                sys.stdout.flush()
             
             return {
                     "discovery_result": discovery_result,
-                    "discovery_query": None,  # Clear discovery query
+                    "discovery_query": None,  # CRITICAL: Clear discovery query after execution
                 "query_error": None
                 }
             
             # Regular SQL query results
+            print(f"🔍 [BigQueryExecutorNode] RETURN: Main query completed")
+            print(f"   query_result rows: {len(df)}")
+            print(f"   execution_time: {execution_time:.2f}s")
+            sys.stdout.flush()
+            
             return {
                 "query_result": df,
                 "query_error": None,
-                "execution_time_sec": execution_time
+                "execution_time_sec": execution_time,
+                "discovery_query": None  # Clear any leftover discovery query
             }
         except Exception as e:
             # Log failed query
@@ -960,14 +1095,26 @@ class ResultCheckNode:
     def execute(state: AgentState) -> Dict[str, Any]:
         """Analyze execution results and set routing flags."""
         from src.utils.formatter import OutputFormatter
-        
-        # Progress indicator
-        if state.get("_verbose"):
-            print(OutputFormatter.info("  → ResultCheckNode: Analyzing results..."), end="\r")
+        import sys
         
         query_error = state.get("query_error")
         query_result = state.get("query_result")
         retry_count = state.get("retry_count", 0)
+        
+        print(f"\n🔍 [ResultCheckNode] START")
+        print(f"   query_error: {bool(query_error)}")
+        print(f"   query_result: {bool(query_result)}")
+        print(f"   retry_count: {retry_count}")
+        if query_result is not None:
+            print(f"   query_result rows: {len(query_result)}")
+        if query_error:
+            print(f"   error_msg: {query_error[:100]}...")
+        sys.stdout.flush()
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → Checking results..."))
+            sys.stdout.flush()
         
         # Track error history for context propagation
         error_history = state.get("error_history", []) or []
@@ -976,19 +1123,30 @@ class ResultCheckNode:
         
         # Case 1: Query execution error - retry if under limit
         if query_error and retry_count < 3:
+            if state.get("_verbose"):
+                import sys
+                print(OutputFormatter.warning(f"  → Query error detected (retry {retry_count + 1}/3): {query_error[:100]}"))
+                sys.stdout.flush()
+            print(f"🔍 [ResultCheckNode] RETURN: Error detected, will retry (retry_count={retry_count + 1})")
+            sys.stdout.flush()
             return {
                 "error_history": error_history,
-                "has_empty_results": False
+                "has_empty_results": False,
+                "retry_count": retry_count + 1  # CRITICAL: Increment retry count to prevent infinite loops
             }
         
         # Case 2: Check for empty results (successful query but no data)
         if query_result is not None and len(query_result) == 0:
+            print(f"🔍 [ResultCheckNode] RETURN: Empty results")
+            sys.stdout.flush()
             return {
                 "has_empty_results": True,
                 "error_history": error_history
             }
         
         # Case 3: Success with data
+        print(f"🔍 [ResultCheckNode] RETURN: Success with data")
+        sys.stdout.flush()
         return {
             "has_empty_results": False,
             "error_history": error_history
@@ -1007,8 +1165,10 @@ class AnalysisNode:
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
+        import sys
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → AnalysisNode: Analyzing data..."), end="\r")
+            print(OutputFormatter.info("  → Analyzing data..."))
+            sys.stdout.flush()
         
         df = state.get("query_result")
         query_intent = state.get("query_intent", "general_query")
@@ -1274,8 +1434,10 @@ class InsightGeneratorNode:
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
+        import sys
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → Generating insights..."), end="\r")
+            print(OutputFormatter.info("  → Generating insights..."))
+            sys.stdout.flush()
         
         user_query = state.get("user_query", "")
         has_empty_results = state.get("has_empty_results", False)

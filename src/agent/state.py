@@ -39,6 +39,7 @@ class AgentState(TypedDict):
     # Discovery queries for data exploration
     discovery_query: Optional[str]        # Query to discover data values
     discovery_result: Optional[str]       # Results from discovery query
+    discovery_count: int                  # Track discovery queries to prevent infinite loops
 
     # Conversation memory (limited to last 5 interactions)
     conversation_history: Optional[list]  # [{query, result, timestamp}]
