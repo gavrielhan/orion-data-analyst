@@ -7,6 +7,8 @@ from datetime import datetime
 from src.agent.graph import OrionGraph
 from src.config import config
 from src.utils.visualizer import Visualizer
+from src.utils.cache import QueryCache
+from src.utils.formatter import OutputFormatter
 
 
 def print_banner():
@@ -149,12 +151,13 @@ def main():
     print_banner()
     validate_config()
     
-    print(f"🔗 Connected to: {config.bigquery_dataset}")
-    print("💡 Ask me anything about the e-commerce data!")
-    print("   Commands: 'exit', 'save session', 'load session [path]'\n")
+    print(OutputFormatter.format(f"🔗 **Connected to:** {config.bigquery_dataset}"))
+    print(OutputFormatter.format("💡 **Ask me anything about the e-commerce data!**"))
+    print("   Commands: 'exit', 'save session', 'load session [path]', 'clear cache'\n")
     
     agent = OrionGraph()
     visualizer = Visualizer()
+    cache = QueryCache()
     conversation_history = []
     
     while True:
@@ -186,30 +189,45 @@ def main():
             if query_lower.startswith("load session "):
                 session_path = user_query[13:].strip()
                 conversation_history = load_session(session_path)
-                print(f"✅ Loaded {len(conversation_history)} previous interactions")
+                print(OutputFormatter.success(f"Loaded {len(conversation_history)} previous interactions"))
                 continue
             
-            # Execute agent with conversation context
-            print("\n🤖 Orion thinking...")
-            result = agent.invoke(user_query, conversation_history)
+            if query_lower == "clear cache":
+                cache.clear()
+                print(OutputFormatter.success("Cache cleared"))
+                continue
             
-            # Handle approval if needed
-            requires_approval = result.get("requires_approval", False)
-            approval_reason = result.get("approval_reason")
-            
-            if requires_approval and approval_reason:
-                print(f"\n⚠️  Approval Required: {approval_reason}")
-                approval = input("Proceed? (yes/no): ").strip().lower()
+            # Check cache first
+            cached_result = cache.get(user_query)
+            if cached_result:
+                print(OutputFormatter.info("Using cached result (instant) ⚡"))
+                result = cached_result
+            else:
+                # Execute agent with conversation context
+                print(OutputFormatter.format("\n🤖 **Orion thinking...**"))
+                result = agent.invoke(user_query, conversation_history)
                 
-                if approval not in ["yes", "y"]:
-                    print("❌ Query cancelled")
-                    continue
+                # Handle approval if needed
+                requires_approval = result.get("requires_approval", False)
+                approval_reason = result.get("approval_reason")
                 
-                # Re-execute after approval (in practice, would modify graph routing)
-                print("\n🤖 Executing approved query...")
+                if requires_approval and approval_reason:
+                    print(OutputFormatter.warning(f"Approval Required: {approval_reason}"))
+                    approval = input("Proceed? (yes/no): ").strip().lower()
+                    
+                    if approval not in ["yes", "y"]:
+                        print(OutputFormatter.error("Query cancelled"))
+                        continue
+                    
+                    print(OutputFormatter.format("\n🤖 **Executing approved query...**"))
+                
+                # Cache successful results
+                if not result.get("query_error"):
+                    cache.set(user_query, result)
             
-            # Display output
-            print(result.get("final_output", "No output generated"))
+            # Display output with beautiful formatting
+            output = result.get("final_output", "No output generated")
+            print(OutputFormatter.format(output))
             
             # Update conversation history (limit to last 5)
             df = result.get("query_result")

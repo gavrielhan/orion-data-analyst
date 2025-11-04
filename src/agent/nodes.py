@@ -230,13 +230,17 @@ class InputNode:
 
 
 class QueryBuilderNode:
-    """Generates SQL query using Gemini API."""
+    """Generates SQL query using Gemini API with rate limiting."""
     
     def __init__(self):
         # Initialize Gemini API
         genai.configure(api_key=config.gemini_api_key)
         # Use Gemini 2.0 Flash for faster responses
         self.model = genai.GenerativeModel("gemini-2.0-flash")
+        
+        # Rate limiter: 60 calls per minute (Gemini free tier limit)
+        from src.utils.rate_limiter import RateLimiter
+        self.rate_limiter = RateLimiter(max_calls=60, window_seconds=60)
         
     def _load_schema_context(self) -> str:
         """Load schema context from saved schema file or fallback to hardcoded."""
@@ -482,6 +486,9 @@ Your response (MUST start with META: or SQL:):
 """
         
         try:
+            # Rate limiting to prevent API quota exhaustion
+            wait_time = self.rate_limiter.wait_if_needed()
+            
             response = self.model.generate_content(
                 prompt,
                 generation_config=genai.GenerationConfig(
@@ -1084,6 +1091,10 @@ class InsightGeneratorNode:
     def __init__(self):
         genai.configure(api_key=config.gemini_api_key)
         self.model = genai.GenerativeModel("gemini-2.0-flash")
+        
+        # Shared rate limiter with QueryBuilderNode
+        from src.utils.rate_limiter import RateLimiter
+        self.rate_limiter = RateLimiter(max_calls=60, window_seconds=60)
     
     def execute(self, state: AgentState) -> Dict[str, Any]:
         """Generate insights from empty results or data analysis."""
@@ -1110,6 +1121,8 @@ SQL: {sql_query}
 Possible reasons: filters too restrictive, no data for time period, typos, etc."""
         
         try:
+            self.rate_limiter.wait_if_needed()
+            
             response = self.model.generate_content(
                 prompt,
                 generation_config=genai.GenerationConfig(
@@ -1158,6 +1171,8 @@ Provide:
 Keep it concise and business-focused. Use bullet points."""
         
         try:
+            self.rate_limiter.wait_if_needed()
+            
             response = self.model.generate_content(
                 prompt,
                 generation_config=genai.GenerationConfig(
