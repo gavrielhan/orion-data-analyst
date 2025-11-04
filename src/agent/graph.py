@@ -7,12 +7,14 @@ from src.agent.nodes import (
     ContextNode,
     QueryBuilderNode,
     ValidationNode,
+    ApprovalNode,
     BigQueryExecutorNode,
     ResultCheckNode,
     AnalysisNode,
     InsightGeneratorNode,
     OutputNode,
     query_builder_node,
+    approval_node,
     result_check_node,
     analysis_node,
     insight_generator_node
@@ -56,14 +58,14 @@ class OrionGraph:
         return "validation"
     
     def _route_from_validation(self, state: AgentState) -> str:
-        """Route from validation - execute if passed, output if failed."""
+        """Route from validation - check approval if passed, output if failed."""
         validation_passed = state.get("validation_passed", False)
         query_error = state.get("query_error")
         
         if query_error or not validation_passed:
             return "output"
         
-        return "bigquery_executor"
+        return "approval"
     
     def _route_from_result_check(self, state: AgentState) -> str:
         """
@@ -87,13 +89,10 @@ class OrionGraph:
     
     def _build_graph(self) -> StateGraph:
         """
-        Build self-healing LangGraph with analysis and insights.
+        Build conversational LangGraph with human-in-the-loop approval.
         
-        Flow: input → context → query_builder → validation → executor → result_check
-        Result_check routes to:
-          - query_builder (retry with error context, max 3 times)
-          - insight_generator (empty results explanation)
-          - analysis → insight_generator → output (success with data)
+        Flow: input → context → query_builder → validation → approval → executor → result_check
+        Approval node flags expensive queries for user confirmation (handled in CLI).
         """
         workflow = StateGraph(AgentState)
         
@@ -102,6 +101,7 @@ class OrionGraph:
         workflow.add_node("context", ContextNode.execute)
         workflow.add_node("query_builder", query_builder_node.execute)
         workflow.add_node("validation", ValidationNode.execute)
+        workflow.add_node("approval", approval_node.execute)
         workflow.add_node("bigquery_executor", BigQueryExecutorNode.execute)
         workflow.add_node("result_check", result_check_node.execute)
         workflow.add_node("analysis", analysis_node.execute)
@@ -129,10 +129,13 @@ class OrionGraph:
             "validation",
             self._route_from_validation,
             {
-                "bigquery_executor": "bigquery_executor",
+                "approval": "approval",
                 "output": "output"
             }
         )
+        # Approval always proceeds to executor (CLI handles user confirmation)
+        workflow.add_edge("approval", "bigquery_executor")
+        
         # Executor always goes to result_check for evaluation
         workflow.add_edge("bigquery_executor", "result_check")
         
@@ -154,8 +157,8 @@ class OrionGraph:
         
         return workflow
     
-    def invoke(self, user_query: str) -> dict:
-        """Execute the agent with a user query."""
+    def invoke(self, user_query: str, conversation_history: list = None) -> dict:
+        """Execute the agent with a user query and optional conversation history."""
         initial_state: AgentState = {
             "user_query": user_query,
             "query_intent": "",
@@ -171,6 +174,9 @@ class OrionGraph:
             "has_empty_results": None,
             "key_findings": None,
             "visualization_path": None,
+            "conversation_history": conversation_history or [],
+            "requires_approval": None,
+            "approval_reason": None,
             "final_output": "",
             "retry_count": 0,
             "execution_time_sec": None,

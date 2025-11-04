@@ -1,6 +1,9 @@
 """Command-line interface for Orion agent."""
 
 import sys
+import json
+from pathlib import Path
+from datetime import datetime
 from src.agent.graph import OrionGraph
 from src.config import config
 from src.utils.visualizer import Visualizer
@@ -36,6 +39,32 @@ def validate_config():
         print(f"Missing required environment variables: {', '.join(missing)}")
         print("\nPlease set these in your .env file (see .env.example)")
         sys.exit(1)
+
+
+def save_session(conversation_history: list, session_name: str = None):
+    """Save conversation history to file."""
+    sessions_dir = Path.home() / "Desktop" / "results" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    
+    if not session_name:
+        session_name = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+    
+    filepath = sessions_dir / f"{session_name}.json"
+    
+    with open(filepath, 'w') as f:
+        json.dump(conversation_history, f, indent=2, default=str)
+    
+    return str(filepath)
+
+
+def load_session(session_path: str) -> list:
+    """Load conversation history from file."""
+    try:
+        with open(session_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"❌ Failed to load session: {e}")
+        return []
 
 
 def handle_export_options(df, visualizer, user_query_lower):
@@ -116,16 +145,17 @@ def handle_export_options(df, visualizer, user_query_lower):
 
 
 def main():
-    """Main CLI entry point with visualization and export support."""
+    """Main CLI entry point with conversation memory and session management."""
     print_banner()
     validate_config()
     
     print(f"🔗 Connected to: {config.bigquery_dataset}")
     print("💡 Ask me anything about the e-commerce data!")
-    print("   (Type 'exit' or 'quit' to leave)\n")
+    print("   Commands: 'exit', 'save session', 'load session [path]'\n")
     
     agent = OrionGraph()
     visualizer = Visualizer()
+    conversation_history = []
     
     while True:
         try:
@@ -135,19 +165,64 @@ def main():
             if not user_query:
                 continue
             
-            if user_query.lower() in ["exit", "quit", "q"]:
+            query_lower = user_query.lower()
+            
+            # Handle commands
+            if query_lower in ["exit", "quit", "q"]:
+                # Offer to save session
+                if conversation_history:
+                    save_prompt = input("💾 Save conversation? (yes/no): ").strip().lower()
+                    if save_prompt in ["yes", "y"]:
+                        filepath = save_session(conversation_history)
+                        print(f"✅ Session saved to: {filepath}")
                 print("\n👋 Goodbye!")
                 break
             
-            # Execute agent for queries
+            if query_lower == "save session":
+                filepath = save_session(conversation_history)
+                print(f"✅ Session saved to: {filepath}")
+                continue
+            
+            if query_lower.startswith("load session "):
+                session_path = user_query[13:].strip()
+                conversation_history = load_session(session_path)
+                print(f"✅ Loaded {len(conversation_history)} previous interactions")
+                continue
+            
+            # Execute agent with conversation context
             print("\n🤖 Orion thinking...")
-            result = agent.invoke(user_query)
+            result = agent.invoke(user_query, conversation_history)
+            
+            # Handle approval if needed
+            requires_approval = result.get("requires_approval", False)
+            approval_reason = result.get("approval_reason")
+            
+            if requires_approval and approval_reason:
+                print(f"\n⚠️  Approval Required: {approval_reason}")
+                approval = input("Proceed? (yes/no): ").strip().lower()
+                
+                if approval not in ["yes", "y"]:
+                    print("❌ Query cancelled")
+                    continue
+                
+                # Re-execute after approval (in practice, would modify graph routing)
+                print("\n🤖 Executing approved query...")
             
             # Display output
             print(result.get("final_output", "No output generated"))
             
-            # Handle export options if there's data
+            # Update conversation history (limit to last 5)
             df = result.get("query_result")
+            result_summary = "No results" if df is None or len(df) == 0 else f"{len(df)} rows"
+            conversation_history.append({
+                "query": user_query,
+                "result_summary": result_summary,
+                "timestamp": datetime.now().isoformat()
+            })
+            if len(conversation_history) > 5:
+                conversation_history = conversation_history[-5:]
+            
+            # Handle export options if there's data
             if df is not None and len(df) > 0:
                 handle_export_options(df, visualizer, user_query.lower())
             

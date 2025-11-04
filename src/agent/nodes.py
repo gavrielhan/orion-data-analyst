@@ -18,28 +18,35 @@ from src.agent.state import AgentState
 
 
 class ContextNode:
-    """Dynamically retrieves and caches BigQuery schema information."""
+    """
+    Manages schema and conversation context.
+    Loads previous queries/results for follow-up handling.
+    """
     
     CACHE_DURATION_SEC = 3600  # 1 hour cache
     SCHEMA_FILE = Path(__file__).parent.parent.parent / "schemas.json"
+    MAX_HISTORY = 5  # Keep last 5 interactions for context
     
     @classmethod
     def execute(cls, state: AgentState) -> Dict[str, Any]:
-        """Load or refresh schema context with caching."""
-        # Check if cache is still valid
+        """Load schema and conversation context."""
         cache_timestamp = state.get("schema_cache_timestamp", 0)
         current_time = time.time()
         
-        if cache_timestamp and (current_time - cache_timestamp) < cls.CACHE_DURATION_SEC:
-            # Cache is valid, reuse existing schema
-            return {}
+        # Load schema if needed
+        schema_context = state.get("schema_context")
+        if not schema_context or (current_time - cache_timestamp) >= cls.CACHE_DURATION_SEC:
+            schema_context = cls._load_schema()
         
-        # Load schema from file or fetch from BigQuery
-        schema_context = cls._load_schema()
+        # Maintain conversation history (limit to last N)
+        history = state.get("conversation_history", []) or []
+        if len(history) > cls.MAX_HISTORY:
+            history = history[-cls.MAX_HISTORY:]
         
         return {
             "schema_context": schema_context,
-            "schema_cache_timestamp": current_time
+            "schema_cache_timestamp": current_time,
+            "conversation_history": history
         }
     
     @classmethod
@@ -108,6 +115,36 @@ class ContextNode:
         
         parts.append("\nJOINs: orders.user_id=users.id, orders.order_id=order_items.order_id, order_items.product_id=products.id")
         return "\n".join(parts)
+
+
+class ApprovalNode:
+    """
+    Human-in-the-loop approval for high-cost or sensitive queries.
+    Flags queries exceeding cost threshold for user approval.
+    """
+    
+    APPROVAL_THRESHOLD_GB = 5.0  # Require approval for >5GB queries
+    
+    @staticmethod
+    def execute(state: AgentState) -> Dict[str, Any]:
+        """Check if query requires user approval."""
+        estimated_cost = state.get("estimated_cost_gb", 0)
+        validation_passed = state.get("validation_passed", False)
+        
+        if not validation_passed:
+            return {}
+        
+        # Check if approval needed
+        if estimated_cost > ApprovalNode.APPROVAL_THRESHOLD_GB:
+            return {
+                "requires_approval": True,
+                "approval_reason": f"Query will scan {estimated_cost:.2f} GB (threshold: {ApprovalNode.APPROVAL_THRESHOLD_GB} GB)"
+            }
+        
+        return {
+            "requires_approval": False,
+            "approval_reason": None
+        }
 
 
 class ValidationNode:
@@ -377,14 +414,27 @@ Fixed SQL Query:
             if retry_count > 0:
                 retry_instruction = f"\n\n⚠️ ATTENTION: Previous response was invalid. Your response MUST start with either 'META:' or 'SQL:' - nothing else. This is attempt {retry_count + 1} of 3.\n"
             
+            # Build conversation context for follow-up questions
+            conversation_history = state.get("conversation_history", []) or []
+            conv_context = ""
+            if conversation_history:
+                conv_context = "\n\nCONVERSATION HISTORY (for follow-up context):\n"
+                for i, entry in enumerate(conversation_history[-3:], 1):  # Last 3 only
+                    conv_context += f"{i}. User: {entry.get('query', 'N/A')}\n"
+                    result_summary = entry.get('result_summary', 'N/A')
+                    if len(result_summary) > 150:
+                        result_summary = result_summary[:150] + "..."
+                    conv_context += f"   Result: {result_summary}\n"
+            
             prompt = f"""
 You are an intelligent data analysis assistant named Orion. Your role is to help users query and analyze e-commerce data.
 
 {context}
-
+{conv_context}
 User query: {user_query}
 {retry_instruction}
 ANALYZE THE QUERY:
+Handle follow-up questions (e.g., "show the same for last quarter", "break that down by region") by referencing conversation history above.
 Carefully determine what the user is asking:
 - If they're asking about YOUR CAPABILITIES, WHAT datasets/tables/columns are AVAILABLE, or general HELP → This is a META question about you
 - If they're asking about ACTUAL DATA (specific values, records, numbers, calculations from the database) → This needs a SQL query
@@ -774,8 +824,8 @@ class ResultCheckNode:
 
 class AnalysisNode:
     """
-    Performs statistical analysis on query results based on intent.
-    Supports: aggregation, trends, ranking, segmentation, growth rates.
+    Performs statistical analysis on query results.
+    Supports: basic analysis + advanced (RFM, anomaly detection, comparative).
     """
     
     @staticmethod
@@ -793,13 +843,23 @@ class AnalysisNode:
         key_findings = []
         
         try:
-            if analysis_type == "ranking":
+            # Check for advanced analysis requests
+            if "rfm" in user_query or "customer segment" in user_query:
+                key_findings = AnalysisNode._rfm_analysis(df)
+                analysis_type = "rfm_segmentation"
+            elif "anomal" in user_query or "outlier" in user_query:
+                key_findings = AnalysisNode._anomaly_detection(df)
+                analysis_type = "anomaly_detection"
+            elif "compar" in user_query or "versus" in user_query or "vs" in user_query:
+                key_findings = AnalysisNode._comparative_analysis(df)
+                analysis_type = "comparative"
+            elif analysis_type == "ranking":
                 key_findings = AnalysisNode._analyze_ranking(df)
             elif analysis_type == "trends":
                 key_findings = AnalysisNode._analyze_trends(df)
             elif analysis_type == "segmentation":
                 key_findings = AnalysisNode._analyze_segmentation(df)
-            else:  # aggregation or general
+            else:
                 key_findings = AnalysisNode._analyze_aggregation(df)
             
             return {
@@ -807,7 +867,6 @@ class AnalysisNode:
                 "key_findings": key_findings
             }
         except Exception:
-            # Fallback to basic stats
             return {
                 "analysis_type": "aggregation",
                 "key_findings": [f"Returned {len(df)} rows"]
@@ -921,6 +980,97 @@ class AnalysisNode:
             total = df[col].sum()
             avg = df[col].mean()
             findings.append(f"Total: {total:.2f}, Average: {avg:.2f}")
+        
+        return findings
+    
+    @staticmethod
+    def _rfm_analysis(df: pd.DataFrame) -> list:
+        """RFM (Recency, Frequency, Monetary) customer segmentation."""
+        findings = []
+        
+        # Look for relevant columns
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) == 0:
+            return ["RFM analysis requires numeric data"]
+        
+        # Calculate quartiles for segmentation
+        value_col = numeric_cols[0]
+        quartiles = df[value_col].quantile([0.25, 0.5, 0.75])
+        
+        # Segment customers
+        high_value = df[df[value_col] >= quartiles[0.75]]
+        medium_value = df[(df[value_col] >= quartiles[0.25]) & (df[value_col] < quartiles[0.75])]
+        low_value = df[df[value_col] < quartiles[0.25]]
+        
+        findings.append(f"High-value segment: {len(high_value)} customers ({len(high_value)/len(df)*100:.1f}%)")
+        findings.append(f"Medium-value segment: {len(medium_value)} customers ({len(medium_value)/len(df)*100:.1f}%)")
+        findings.append(f"Low-value segment: {len(low_value)} customers ({len(low_value)/len(df)*100:.1f}%)")
+        
+        if len(high_value) > 0:
+            findings.append(f"High-value avg: {high_value[value_col].mean():.2f}")
+        
+        return findings
+    
+    @staticmethod
+    def _anomaly_detection(df: pd.DataFrame) -> list:
+        """Detect outliers and unusual patterns using IQR method."""
+        findings = []
+        
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) == 0:
+            return ["No numeric data for anomaly detection"]
+        
+        value_col = numeric_cols[0]
+        Q1 = df[value_col].quantile(0.25)
+        Q3 = df[value_col].quantile(0.75)
+        IQR = Q3 - Q1
+        
+        # Define outliers
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        outliers = df[(df[value_col] < lower_bound) | (df[value_col] > upper_bound)]
+        
+        if len(outliers) > 0:
+            findings.append(f"Detected {len(outliers)} outliers ({len(outliers)/len(df)*100:.1f}%)")
+            findings.append(f"Outlier range: <{lower_bound:.2f} or >{upper_bound:.2f}")
+            if len(outliers) <= 3:
+                for idx in outliers.head(3).index:
+                    findings.append(f"  Outlier: {df.loc[idx, value_col]:.2f}")
+        else:
+            findings.append("No significant outliers detected")
+        
+        return findings
+    
+    @staticmethod
+    def _comparative_analysis(df: pd.DataFrame) -> list:
+        """Period-over-period or segment comparison."""
+        findings = []
+        
+        if len(df) < 2:
+            return ["Insufficient data for comparison"]
+        
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) == 0:
+            return ["No numeric data for comparison"]
+        
+        value_col = numeric_cols[0]
+        
+        # Compare first half vs second half
+        mid = len(df) // 2
+        first_half = df.iloc[:mid][value_col]
+        second_half = df.iloc[mid:][value_col]
+        
+        first_avg = first_half.mean()
+        second_avg = second_half.mean()
+        
+        if first_avg != 0:
+            change_pct = ((second_avg - first_avg) / first_avg) * 100
+            findings.append(f"Period 1 avg: {first_avg:.2f}")
+            findings.append(f"Period 2 avg: {second_avg:.2f}")
+            findings.append(f"Change: {change_pct:+.1f}%")
+        else:
+            findings.append("Cannot compute percentage change (division by zero)")
         
         return findings
 
@@ -1098,6 +1248,7 @@ class OutputNode:
 # Create singleton instances for the graph
 input_node = InputNode()
 query_builder_node = QueryBuilderNode()
+approval_node = ApprovalNode()
 bigquery_executor_node = BigQueryExecutorNode()
 result_check_node = ResultCheckNode()
 analysis_node = AnalysisNode()

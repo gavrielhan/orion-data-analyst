@@ -35,6 +35,13 @@ class AgentState(TypedDict):
     # Output
     final_output: str
     
+    # Conversation memory (limited to last 5 interactions)
+    conversation_history: Optional[list]  # [{query, result, timestamp}]
+    
+    # Human-in-the-loop
+    requires_approval: Optional[bool]
+    approval_reason: Optional[str]
+    
     # Metadata
     retry_count: int
     execution_time_sec: Optional[float]
