@@ -36,15 +36,20 @@ class OrionGraph:
         return "query_builder"
     
     def _route_from_query_builder(self, state: AgentState) -> str:
-        """Route from query builder - check for meta answers or SQL."""
+        """Route from query builder - check for meta answers, discovery, or SQL."""
         final_output = state.get("final_output", "")
         sql_query = state.get("sql_query", "")
+        discovery_query = state.get("discovery_query", "")
         query_error = state.get("query_error")
         retry_count = state.get("retry_count", 0)
         
         # If it's a meta answer, go directly to output
         if final_output and final_output.strip():
             return "output"
+        
+        # If it's a discovery query, execute it first
+        if discovery_query and discovery_query.strip():
+            return "bigquery_executor"  # Execute discovery, then loop back
         
         # If there's an error, check if we should retry
         if query_error:
@@ -69,6 +74,17 @@ class OrionGraph:
             return "output"
         
         return "approval"
+    
+    def _route_from_bigquery_executor(self, state: AgentState) -> str:
+        """Route from bigquery executor - check if discovery or main query."""
+        discovery_result = state.get("discovery_result")
+        
+        # If we just completed a discovery query, go back to query builder
+        if discovery_result:
+            return "query_builder"
+        
+        # Regular query completed, check results
+        return "result_check"
     
     def _route_from_result_check(self, state: AgentState) -> str:
         """
@@ -128,7 +144,8 @@ class OrionGraph:
             {
                 "output": "output",
                 "validation": "validation",
-                "query_builder": "query_builder"  # Self-healing retry loop
+                "query_builder": "query_builder",  # Self-healing retry loop
+                "bigquery_executor": "bigquery_executor"  # Discovery query execution
             }
         )
         workflow.add_conditional_edges(
@@ -142,8 +159,15 @@ class OrionGraph:
         # Approval always proceeds to executor (CLI handles user confirmation)
         workflow.add_edge("approval", "bigquery_executor")
         
-        # Executor always goes to result_check for evaluation
-        workflow.add_edge("bigquery_executor", "result_check")
+        # Executor routes based on whether it's discovery or main query
+        workflow.add_conditional_edges(
+            "bigquery_executor",
+            self._route_from_bigquery_executor,
+            {
+                "query_builder": "query_builder",     # After discovery, loop back
+                "result_check": "result_check"        # After main query, check results
+            }
+        )
         
         # Result check implements smart routing based on outcome
         workflow.add_conditional_edges(
@@ -171,6 +195,8 @@ class OrionGraph:
             "schema_context": None,
             "schema_cache_timestamp": None,
             "sql_query": "",
+            "discovery_query": None,
+            "discovery_result": None,
             "validation_passed": None,
             "estimated_cost_gb": None,
             "query_result": None,

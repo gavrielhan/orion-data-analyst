@@ -243,8 +243,10 @@ class InputNode:
         query_lower = user_query.lower().strip()
         
         # Fast path: Check for common meta-questions (instant response)
+        # Use word boundaries to avoid substring matches (e.g., "hi" in "this")
         for pattern, response in InputNode.META_RESPONSES.items():
-            if pattern in query_lower:
+            # Match as whole query or at word boundaries
+            if query_lower == pattern or query_lower.startswith(pattern + " ") or query_lower.endswith(" " + pattern):
                 return {
                     "query_intent": "meta_question",
                     "final_output": response
@@ -400,11 +402,14 @@ Generate clean, valid SQL queries only.
         
         # Progress indicator
         if state.get("_verbose"):
+            discovery_result = state.get("discovery_result")
             retry_count = state.get("retry_count", 0)
-            if retry_count > 0:
+            if discovery_result:
+                print(OutputFormatter.info("  → Generating SQL with discovered data..."), end="\r")
+            elif retry_count > 0:
                 print(OutputFormatter.info(f"  → Generating SQL (retry {retry_count})..."), end="\r")
             else:
-                print(OutputFormatter.info("  → Generating SQL query..."), end="\r")
+                print(OutputFormatter.info("  → Analyzing query..."), end="\r")
         
         user_query = state.get("user_query", "")
         context = self._get_schema_context()
@@ -478,18 +483,39 @@ Fixed SQL Query:
                         result_summary = result_summary[:150] + "..."
                     conv_context += f"   Result: {result_summary}\n"
             
+            # Add discovery results if available
+            discovery_result = state.get("discovery_result")
+            discovery_context = ""
+            if discovery_result:
+                discovery_context = f"\n\nDISCOVERY RESULTS:\nYou previously discovered these data values:\n{discovery_result}\n\nNow generate the main SQL query using this information.\n"
+            
             prompt = f"""
 You are an intelligent data analysis assistant named Orion. Your role is to help users query and analyze e-commerce data.
 
 {context}
 {conv_context}
+{discovery_context}
 User query: {user_query}
 {retry_instruction}
 ANALYZE THE QUERY:
 Handle follow-up questions (e.g., "show the same for last quarter", "break that down by region") by referencing conversation history above.
+Pay attention to corrections/clarifications (e.g., "I think you're wrong, check again", "actually it's X not Y") - use these to fix previous errors.
+
 Carefully determine what the user is asking:
 - If they're asking about YOUR CAPABILITIES, WHAT datasets/tables/columns are AVAILABLE, or general HELP → This is a META question about you
 - If they're asking about ACTUAL DATA (specific values, records, numbers, calculations from the database) → This needs a SQL query
+
+DATA DISCOVERY APPROACH (USE THIS WHEN UNCERTAIN):
+If you're UNCERTAIN about data values (e.g., "how are genders encoded?", "what status values exist?"):
+1. First generate a DISCOVERY query to explore the data
+2. Use DISTINCT to find unique values in the relevant column
+3. Limit to 20 rows for fast results
+
+DISCOVERY QUERY FORMAT:
+When you need to discover data values, respond with "DISCOVER:" prefix:
+Example: "DISCOVER: SELECT DISTINCT gender FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
+
+After seeing discovery results, you'll be asked again to generate the main query using discovered information.
 
 EXAMPLES OF META QUESTIONS (answer directly, no SQL needed):
 - "which dataset can you query?"
@@ -499,30 +525,35 @@ EXAMPLES OF META QUESTIONS (answer directly, no SQL needed):
 - "help"
 - "tell me about your capabilities"
 
-EXAMPLES OF SQL QUESTIONS (generate SQL to query data):
-- "what is the most expensive product?"
-- "how many orders were placed?"
-- "show me the top 10 customers"
-- "what is the total revenue?"
+EXAMPLES OF SQL QUESTIONS:
+- "what is the most expensive product?" → Direct SQL
+- "how many orders were placed?" → Direct SQL
+- "show me the top 10 customers" → Direct SQL
+- "how many females are in orders?" → DISCOVER gender values first, then SQL
+- "what are the order statuses?" → DISCOVER status values first, then SQL
 
 RESPONSE FORMAT (CRITICAL - FOLLOW EXACTLY):
-You MUST respond in one of two formats. Your response MUST start with one of these prefixes:
+You MUST respond in one of THREE formats. Your response MUST start with one of these prefixes:
 
 1. If META question (about capabilities/datasets/tables):
-   Your response MUST start with: "META:"
+   Response: "META: <your answer>"
    Example: "META: I can query the bigquery-public-data.thelook_ecommerce dataset..."
    
-2. If SQL question (needs data from database):
-   Your response MUST start with: "SQL:"
+2. If you need to DISCOVER data values first:
+   Response: "DISCOVER: <exploration query>"
+   Example: "DISCOVER: SELECT DISTINCT gender FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
+   
+3. If you have enough information for SQL:
+   Response: "SQL: <query>"
    Example: "SQL: SELECT * FROM \`bigquery-public-data.thelook_ecommerce.orders\` LIMIT 10"
 
-CRITICAL: Your response MUST start with exactly "META:" or "SQL:" - no other text before it!
+CRITICAL: Your response MUST start with exactly "META:", "DISCOVER:", or "SQL:" - no other text before it!
 
 IMPORTANT: 
 - For META questions, provide a helpful answer directly - do NOT generate SQL
 - For SQL questions, provide ONLY the SQL query - no explanations or text before the SQL:
 
-CRITICAL SQL RULES (only if responding with SQL):
+CRITICAL SQL RULES (for SQL and DISCOVER queries):
 - Use standard SQL syntax for BigQuery
 - ALWAYS prefix ALL table names with the FULL path: 'bigquery-public-data.thelook_ecommerce.'
 - IMPORTANT: For BigQuery public datasets, use backticks around the ENTIRE path, not each part
@@ -598,6 +629,15 @@ Your response (MUST start with META: or SQL:):
                     return {
                         "final_output": response_text,
                         "retry_count": 0  # Reset retry count on success
+                    }
+            
+            # Check if this is a DISCOVERY query (needs to explore data first)
+            if response_upper.startswith("DISCOVER:"):
+                discovery_query = response_text[9:].strip()
+                if discovery_query:
+                    return {
+                        "discovery_query": discovery_query,
+                        "retry_count": 0  # Reset retry, we'll come back after discovery
                     }
             
             # Check if this is a SQL question response
@@ -779,16 +819,24 @@ class BigQueryExecutorNode:
     
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
-        """Execute SQL query and return results."""
+        """Execute SQL query or discovery query and return results."""
         from src.utils.formatter import OutputFormatter
+        
+        # Check if this is a discovery query
+        discovery_query = state.get("discovery_query", "")
+        sql_query = state.get("sql_query", "")
+        is_discovery = bool(discovery_query and not sql_query)
         
         # Progress indicator
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → Executing query on BigQuery..."), end="\r")
+            if is_discovery:
+                print(OutputFormatter.info("  → Discovering data values..."), end="\r")
+            else:
+                print(OutputFormatter.info("  → Executing query on BigQuery..."), end="\r")
         
-        sql_query = state.get("sql_query", "")
+        query_to_execute = discovery_query if is_discovery else sql_query
         
-        if not sql_query:
+        if not query_to_execute:
             return {
                 "query_error": "No SQL query to execute",
                 "query_result": None
@@ -799,18 +847,33 @@ class BigQueryExecutorNode:
             
             # Track execution time
             start_time = time.time()
-            query_job = client.query(sql_query)
+            query_job = client.query(query_to_execute)
             df = query_job.to_dataframe(max_results=config.max_query_rows)
             execution_time = time.time() - start_time
             
             # Log query execution
             BigQueryExecutorNode._log_query(
-                sql_query, 
+                query_to_execute, 
                 execution_time, 
                 query_job.total_bytes_processed,
                 success=True
             )
             
+            # Handle discovery results differently
+            if is_discovery:
+                # Format discovery results as a readable string
+                discovery_result = "Discovered values:\n"
+                for col in df.columns:
+                    values = df[col].dropna().unique().tolist()[:20]  # Limit to 20 values
+                    discovery_result += f"  {col}: {', '.join(map(str, values))}\n"
+                
+                return {
+                    "discovery_result": discovery_result,
+                    "discovery_query": None,  # Clear discovery query
+                    "query_error": None
+                }
+            
+            # Regular SQL query results
             return {
                 "query_result": df,
                 "query_error": None,
@@ -819,7 +882,7 @@ class BigQueryExecutorNode:
         except Exception as e:
             # Log failed query
             BigQueryExecutorNode._log_query(
-                sql_query, 
+                query_to_execute, 
                 0, 
                 0,
                 success=False,
