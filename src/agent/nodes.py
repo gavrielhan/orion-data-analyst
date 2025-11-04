@@ -203,9 +203,15 @@ class ValidationNode:
                     "query_error": f"Security violation: {keyword} operations are not allowed"
                 }
         
-        # Enforce row limit
-        if "LIMIT" not in sql_upper:
-            sql_query += "\nLIMIT 1000"
+        # Enforce row limit - check if LIMIT already exists (case-insensitive)
+        # Use regex to find LIMIT keyword that's not part of another word
+        # Look for LIMIT at the end of the query (after ORDER BY if present)
+        has_limit = re.search(r'\bLIMIT\s+\d+', sql_upper)
+        
+        if not has_limit:
+            # Only append LIMIT if query doesn't already have one
+            # Remove trailing semicolon and whitespace before adding LIMIT
+            sql_query = sql_query.rstrip().rstrip(';') + "\nLIMIT 1000"
         
         # Cost estimation using BigQuery dry_run
         try:
@@ -499,6 +505,11 @@ CRITICAL RULES:
   * bigquery-public-data.thelook_ecommerce.order_items ❌ (missing backticks)
   * bigquery.order_items ❌
   * thelook_ecommerce.order_items ❌
+- ALWAYS use table aliases and prefix column names with the alias to avoid ambiguity
+  Example: SELECT u.gender, EXTRACT(YEAR FROM u.created_at) AS year, COUNT(*) AS count
+           FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+           GROUP BY u.gender, year
+- Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
 - Always use LIMIT to restrict results (default 100 rows max)
 - Use clear column aliases
 - Return ONLY the fixed SQL query, no explanations
@@ -611,6 +622,11 @@ CRITICAL SQL RULES (for SQL and DISCOVER queries):
 - ALWAYS prefix ALL table names with the FULL path: 'bigquery-public-data.thelook_ecommerce.'
 - IMPORTANT: For BigQuery public datasets, use backticks around the ENTIRE path, not each part
 - Examples: `bigquery-public-data.thelook_ecommerce.order_items`
+- ALWAYS use table aliases and prefix column names with the alias to avoid ambiguity
+  Example: SELECT u.gender, EXTRACT(YEAR FROM u.created_at) AS year, COUNT(*) AS count
+           FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+           GROUP BY u.gender, year
+- Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
 - Always use LIMIT to restrict results (default 100 rows max)
 - Use clear column aliases
 
@@ -1015,11 +1031,11 @@ class BigQueryExecutorNode:
                 print(f"   discovery_result length: {len(discovery_result)} chars")
                 print(f"   discovery_query cleared: True")
                 sys.stdout.flush()
-            
-            return {
+                
+                return {
                     "discovery_result": discovery_result,
                     "discovery_query": None,  # CRITICAL: Clear discovery query after execution
-                "query_error": None
+                    "query_error": None
                 }
             
             # Regular SQL query results
@@ -1103,7 +1119,7 @@ class ResultCheckNode:
         
         print(f"\n🔍 [ResultCheckNode] START")
         print(f"   query_error: {bool(query_error)}")
-        print(f"   query_result: {bool(query_result)}")
+        print(f"   query_result: {query_result is not None}")
         print(f"   retry_count: {retry_count}")
         if query_result is not None:
             print(f"   query_result rows: {len(query_result)}")
