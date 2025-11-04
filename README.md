@@ -364,12 +364,4 @@ Contributions welcome! Please:
 
 ---
 
-## 📧 Support
-
-- **Issues**: [GitHub Issues](https://github.com/gavrielhan/orion-data-analyst/issues)
-- **Documentation**: [GitHub Wiki](https://github.com/gavrielhan/orion-data-analyst)
-- **Email**: gavriel.hannuna@gmail.com
-
----
-
 **Made with ❤️ by Gavriel Hannuna**
