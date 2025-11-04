@@ -13,9 +13,7 @@ from google.cloud import bigquery
 from src.config import config
 from src.agent.state import AgentState
 
-
 # MetaQuestionHandler removed - LLM now decides if query is meta or SQL
-
 
 class ContextNode:
     """
@@ -124,7 +122,6 @@ class ContextNode:
         parts.append("\nJOINs: orders.user_id=users.id, orders.order_id=order_items.order_id, order_items.product_id=products.id")
         return "\n".join(parts)
 
-
 class ApprovalNode:
     """
     Human-in-the-loop approval for high-cost or sensitive queries.
@@ -161,7 +158,6 @@ class ApprovalNode:
             "requires_approval": False,
             "approval_reason": None
         }
-
 
 class ValidationNode:
     """Validates SQL queries for security, syntax, and cost."""
@@ -294,7 +290,6 @@ class InputNode:
             "query_intent": intent
         }
 
-
 class QueryBuilderNode:
     """Generates SQL query using Gemini API with rate limiting."""
     
@@ -418,48 +413,22 @@ Please clarify which dataset you're interested in."
 Generate clean, valid SQL queries only.
 """
     
-    def _get_schema_context(self) -> str:
-        """Get schema context (loads from file or uses fallback)."""
-        return self._load_schema_context()
-    
     def execute(self, state: AgentState) -> Dict[str, Any]:
         """Generate SQL query from user query or answer meta-question."""
         from src.utils.formatter import OutputFormatter
         import sys
         
-        # DEBUG: Show state at start
+        # Extract state
         discovery_result = state.get("discovery_result")
-        discovery_query = state.get("discovery_query")
-        sql_query = state.get("sql_query", "")
         retry_count = state.get("retry_count", 0)
-        query_error = state.get("query_error")
-        discovery_count = state.get("discovery_count", 0)
-        
-        print(f"\n🔍 [QueryBuilderNode] START")
-        print(f"   discovery_result: {bool(discovery_result)}")
-        print(f"   discovery_query: {bool(discovery_query)}")
-        print(f"   sql_query: {bool(sql_query)}")
-        print(f"   retry_count: {retry_count}")
-        print(f"   discovery_count: {discovery_count}")
-        print(f"   query_error: {bool(query_error)}")
-        if query_error:
-            print(f"   error_msg: {query_error[:100]}")
-        sys.stdout.flush()
-        
-        # Progress indicator
-        if state.get("_verbose"):
-            if discovery_result:
-                print(OutputFormatter.info("  → Generating SQL with discovered data..."))
-                sys.stdout.flush()
-            elif retry_count > 0:
-                print(OutputFormatter.info(f"  → Generating SQL (retry {retry_count})..."))
-                sys.stdout.flush()
-            else:
-                print(OutputFormatter.info("  → Analyzing query..."))
-                sys.stdout.flush()
-        
         user_query = state.get("user_query", "")
-        context = self._get_schema_context()
+        context = self._load_schema_context()
+        
+        # Progress indicator (verbose only)
+        if state.get("_verbose"):
+            status = "Generating SQL with discovered data" if discovery_result else f"Generating SQL (retry {retry_count})" if retry_count else "Analyzing query"
+            print(OutputFormatter.info(f"  → {status}..."))
+            sys.stdout.flush()
         
         # Check if this is a retry after a BigQuery error
         query_error = state.get("query_error")
@@ -635,18 +604,13 @@ Your response (MUST start with META: or SQL:):
         
         try:
             # Rate limiting to prevent API quota exhaustion
-            # Check status first
             status = self.rate_limiter.get_status()
             if state.get("_verbose"):
-                print(f"🔍 [QueryBuilderNode] Rate limiter status: {status['current_calls']}/{status['max_calls']} calls used")
-                sys.stdout.flush()
+                print(OutputFormatter.info(f"  → Rate limit: {status['current_calls']}/{status['max_calls']} calls"))
             
             wait_time = self.rate_limiter.wait_if_needed(verbose=state.get("_verbose", False))
             if wait_time:
                 print(f"⏱️  [QueryBuilderNode] Waited {wait_time:.1f}s for rate limit")
-                sys.stdout.flush()
-            
-            print(f"🔍 [QueryBuilderNode] Calling Gemini API...")
             sys.stdout.flush()
             
             response = self.model.generate_content(
@@ -714,12 +678,9 @@ Your response (MUST start with META: or SQL:):
             
             # Check if this is a DISCOVERY query (needs to explore data first)
             if response_upper.startswith("DISCOVER:"):
-                # CRITICAL: If discovery_result already exists, don't allow another discovery - force SQL generation
                 discovery_result = state.get("discovery_result")
                 if discovery_result:
                     # Discovery already done - LLM should use it, not generate another
-                    print(f"🔍 [QueryBuilderNode] RETURN: Error - Discovery already completed (retry_count={state.get('retry_count', 0) + 1})")
-                    sys.stdout.flush()
                     return {
                         "query_error": "Discovery already completed. Please generate SQL using the discovery results provided above.",
                         "retry_count": state.get("retry_count", 0) + 1
@@ -731,20 +692,14 @@ Your response (MUST start with META: or SQL:):
                     discovery_count = state.get("discovery_count", 0)
                     if discovery_count >= 2:
                         # Too many discovery queries - force SQL generation
-                        print(f"🔍 [QueryBuilderNode] RETURN: Error - Too many discovery queries (discovery_count={discovery_count})")
-                        sys.stdout.flush()
                         return {
                             "query_error": "Too many discovery queries. Please generate SQL directly using available schema information.",
                             "retry_count": state.get("retry_count", 0) + 1
                         }
-                    
-                    print(f"🔍 [QueryBuilderNode] RETURN: Discovery query (discovery_count={discovery_count + 1})")
-                    sys.stdout.flush()
                     return {
                         "discovery_query": discovery_query,
                         "discovery_result": None,  # Clear old discovery result when starting new discovery
                         "discovery_count": discovery_count + 1  # Track discovery count
-                        # NOTE: Don't reset retry_count here - it needs to persist across discovery
                     }
             
             # Check if this is a SQL question response
@@ -886,12 +841,6 @@ Your response (MUST start with META: or SQL:):
                         "query_error": f"Invalid SQL generated: Query must use full table paths starting with 'bigquery-public-data.thelook_ecommerce.'. Generated query: {sql_query[:200]}",
                         "retry_count": state.get("retry_count", 0) + 1
                     }
-            
-            print(f"🔍 [QueryBuilderNode] RETURN: SQL generated successfully")
-            print(f"   SQL length: {len(sql_query)} chars")
-            print(f"   SQL preview: {sql_query[:100]}...")
-            sys.stdout.flush()
-            
             return {
                 "sql_query": sql_query,
                 "discovery_result": None,  # Clear discovery result after using it
@@ -910,11 +859,8 @@ Your response (MUST start with META: or SQL:):
                 }
             
             # Check for rate limit errors (429)
-            # CRITICAL: Rate limit errors should NOT retry - output immediately
             # Retrying just makes another API call which hits rate limit again
             if "429" in error_str or "Resource exhausted" in error_str or "rate limit" in error_str.lower():
-                print(f"🔍 [QueryBuilderNode] Rate limit error detected from API")
-                sys.stdout.flush()
                 
                 # Check if our rate limiter shows low usage but API still says rate limited
                 # This means quota was exhausted outside this session (previous sessions, other apps, etc.)
@@ -925,15 +871,12 @@ Your response (MUST start with META: or SQL:):
                     # This means the global Gemini quota is exhausted - we need to wait the full window
                     print(f"⏱️  Global Gemini API quota exhausted (not from this session).")
                     print(f"⏱️  Waiting 60 seconds for quota to reset...")
-                    sys.stdout.flush()
                     
                     # Wait the full 60 seconds to let Gemini's quota reset
                     for i in range(60, 0, -10):
                         print(f"⏱️  Waiting {i} seconds... (press Ctrl+C to cancel)", end="\r")
-                        sys.stdout.flush()
                         time.sleep(min(10, i))
                     print("\n⏱️  Wait complete. Quota should be reset now.")
-                    sys.stdout.flush()
                     
                     # Reset our rate limiter to reflect that we've waited
                     self.rate_limiter.reset()
@@ -941,7 +884,6 @@ Your response (MUST start with META: or SQL:):
                     # Our rate limiter also shows high usage - just reset it
                     self.rate_limiter.reset()
                     print(f"⏱️  Rate limiter reset - quota exhausted. Please wait 60 seconds.")
-                    sys.stdout.flush()
                 
                 return {
                     "query_error": "⚠️ Rate limit exceeded. Gemini API quota exhausted.\n   Waited 60 seconds for quota reset. Please try again now.\n   If still failing, wait another 60 seconds or check if other apps are using your API key.",
@@ -953,7 +895,6 @@ Your response (MUST start with META: or SQL:):
                 "query_error": f"Failed to generate SQL: {error_str}",
                 "retry_count": retry_count + 1
             }
-
 
 class BigQueryExecutorNode:
     """Executes SQL query on BigQuery with logging."""
@@ -968,16 +909,7 @@ class BigQueryExecutorNode:
         discovery_query = state.get("discovery_query", "")
         sql_query = state.get("sql_query", "")
         is_discovery = bool(discovery_query and not sql_query)
-        
-        print(f"\n🔍 [BigQueryExecutorNode] START")
-        print(f"   is_discovery: {is_discovery}")
-        print(f"   discovery_query: {bool(discovery_query)}")
-        print(f"   sql_query: {bool(sql_query)}")
-        if discovery_query:
-            print(f"   discovery_query preview: {discovery_query[:100]}...")
-        if sql_query:
-            print(f"   sql_query preview: {sql_query[:100]}...")
-        sys.stdout.flush()
+
         
         # Progress indicator
         if state.get("_verbose"):
@@ -990,8 +922,6 @@ class BigQueryExecutorNode:
         query_to_execute = discovery_query if is_discovery else sql_query
         
         if not query_to_execute:
-            print(f"🔍 [BigQueryExecutorNode] RETURN: Error - No query to execute")
-            sys.stdout.flush()
             return {
                 "query_error": "No SQL query to execute",
                 "query_result": None
@@ -1026,12 +956,6 @@ class BigQueryExecutorNode:
                 if state.get("_verbose"):
                     print(OutputFormatter.success(f"  → Discovery completed: {len(df.columns)} columns found"))
                     sys.stdout.flush()
-                
-                print(f"🔍 [BigQueryExecutorNode] RETURN: Discovery completed")
-                print(f"   discovery_result length: {len(discovery_result)} chars")
-                print(f"   discovery_query cleared: True")
-                sys.stdout.flush()
-                
                 return {
                     "discovery_result": discovery_result,
                     "discovery_query": None,  # CRITICAL: Clear discovery query after execution
@@ -1039,11 +963,6 @@ class BigQueryExecutorNode:
                 }
             
             # Regular SQL query results
-            print(f"🔍 [BigQueryExecutorNode] RETURN: Main query completed")
-            print(f"   query_result rows: {len(df)}")
-            print(f"   execution_time: {execution_time:.2f}s")
-            sys.stdout.flush()
-            
             return {
                 "query_result": df,
                 "query_error": None,
@@ -1100,7 +1019,6 @@ class BigQueryExecutorNode:
         except Exception:
             pass  # Silent fail on logging errors
 
-
 class ResultCheckNode:
     """
     Evaluates query execution results and determines next action.
@@ -1116,16 +1034,7 @@ class ResultCheckNode:
         query_error = state.get("query_error")
         query_result = state.get("query_result")
         retry_count = state.get("retry_count", 0)
-        
-        print(f"\n🔍 [ResultCheckNode] START")
-        print(f"   query_error: {bool(query_error)}")
-        print(f"   query_result: {query_result is not None}")
-        print(f"   retry_count: {retry_count}")
-        if query_result is not None:
-            print(f"   query_result rows: {len(query_result)}")
-        if query_error:
-            print(f"   error_msg: {query_error[:100]}...")
-        sys.stdout.flush()
+
         
         # Progress indicator
         if state.get("_verbose"):
@@ -1143,8 +1052,6 @@ class ResultCheckNode:
                 import sys
                 print(OutputFormatter.warning(f"  → Query error detected (retry {retry_count + 1}/3): {query_error[:100]}"))
                 sys.stdout.flush()
-            print(f"🔍 [ResultCheckNode] RETURN: Error detected, will retry (retry_count={retry_count + 1})")
-            sys.stdout.flush()
             return {
                 "error_history": error_history,
                 "has_empty_results": False,
@@ -1153,21 +1060,16 @@ class ResultCheckNode:
         
         # Case 2: Check for empty results (successful query but no data)
         if query_result is not None and len(query_result) == 0:
-            print(f"🔍 [ResultCheckNode] RETURN: Empty results")
-            sys.stdout.flush()
             return {
                 "has_empty_results": True,
                 "error_history": error_history
             }
         
         # Case 3: Success with data
-        print(f"🔍 [ResultCheckNode] RETURN: Success with data")
-        sys.stdout.flush()
         return {
             "has_empty_results": False,
             "error_history": error_history
         }
-
 
 class AnalysisNode:
     """
@@ -1429,7 +1331,6 @@ class AnalysisNode:
         
         return findings
 
-
 class InsightGeneratorNode:
     """
     Generates natural language insights from analyzed data using LLM.
@@ -1513,8 +1414,6 @@ Possible reasons: filters too restrictive, no data for time period, typos, etc."
         
         if df is not None and len(df) <= 10:
             data_summary += f"\n\nData preview:\n{df.to_string(index=False)}"
-        
-        # NOTE: Visualization suggestion is now generated lazily in CLI when user requests a chart
         # This saves 1 LLM call per query (25% reduction in API usage)
         
         prompt = f"""You are a business analyst. Generate actionable insights from this data analysis.
@@ -1654,7 +1553,6 @@ Rules:
         except Exception:
             return None
 
-
 class OutputNode:
     """Formats and returns final output with metadata and visualizations."""
     
@@ -1724,7 +1622,6 @@ class OutputNode:
         return {
             "final_output": "\n".join(output_parts)
         }
-
 
 # Create singleton instances for the graph
 input_node = InputNode()
