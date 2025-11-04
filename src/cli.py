@@ -34,12 +34,48 @@ def print_banner():
 
 
 def validate_config():
-    """Validate configuration and exit if missing."""
+    """Validate configuration and provide helpful setup instructions."""
+    from pathlib import Path
+    
+    # Check if .env file exists
+    env_file = Path.cwd() / ".env"
+    env_in_parent = Path(__file__).parent.parent / ".env"
+    
+    if not env_file.exists() and not env_in_parent.exists():
+        print(OutputFormatter.error("Configuration file not found!"))
+        print("\n📝 You need to create a .env file with your API keys.")
+        print("\n" + "─" * 60)
+        print("Create a file named '.env' in the project directory with:\n")
+        print("# Google Cloud Configuration")
+        print("GOOGLE_CLOUD_PROJECT=your-project-id")
+        print("GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json")
+        print("")
+        print("# Gemini AI API Key")
+        print("GEMINI_API_KEY=your-gemini-api-key-here")
+        print("")
+        print("# Optional BigQuery Settings")
+        print("BIGQUERY_DATASET=bigquery-public-data.thelook_ecommerce")
+        print("─" * 60)
+        print("\n💡 Get your Gemini API key: https://makersuite.google.com/app/apikey")
+        print("💡 Get Google Cloud credentials: https://console.cloud.google.com/")
+        sys.exit(1)
+    
+    # Validate required variables
     missing = config.validate()
     if missing:
-        print("❌ Configuration Error:")
-        print(f"Missing required environment variables: {', '.join(missing)}")
-        print("\nPlease set these in your .env file (see .env.example)")
+        print(OutputFormatter.error("Missing required configuration!"))
+        print(f"\n❌ Missing: {', '.join(missing)}")
+        print("\n📝 Update your .env file with:")
+        for var in missing:
+            if "GEMINI" in var:
+                print(f"   {var}=your-gemini-api-key")
+                print(f"   → Get it at: https://makersuite.google.com/app/apikey")
+            elif "PROJECT" in var:
+                print(f"   {var}=your-gcp-project-id")
+                print(f"   → Find it at: https://console.cloud.google.com/")
+            elif "CREDENTIALS" in var:
+                print(f"   {var}=/path/to/your-service-account.json")
+                print(f"   → Create at: https://console.cloud.google.com/iam-admin/serviceaccounts")
         sys.exit(1)
 
 
@@ -149,11 +185,15 @@ def handle_export_options(df, visualizer, user_query_lower):
 def main():
     """Main CLI entry point with conversation memory and session management."""
     print_banner()
+    
+    # Validate configuration with helpful error messages
     validate_config()
     
-    print(OutputFormatter.format(f"🔗 **Connected to:** {config.bigquery_dataset}"))
+    # Show successful connection
+    print(OutputFormatter.success(f"Connected to: {config.bigquery_dataset}"))
     print(OutputFormatter.format("💡 **Ask me anything about the e-commerce data!**"))
-    print("   Commands: 'exit', 'save session', 'load session [path]', 'clear cache'\n")
+    print("   Commands: 'exit', 'save session', 'load session [path]', 'clear cache'")
+    print(OutputFormatter.format("   💾 Tip: Results are cached for faster repeated queries\n"))
     
     agent = OrionGraph()
     visualizer = Visualizer()

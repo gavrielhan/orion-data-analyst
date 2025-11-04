@@ -726,16 +726,20 @@ Your response (MUST start with META: or SQL:):
             error_str = str(e)
             retry_count = state.get("retry_count", 0)
             
+            # API key errors
+            if "API_KEY" in error_str or "API key" in error_str or "INVALID_ARGUMENT" in error_str:
+                return {
+                    "query_error": "❌ Invalid Gemini API key. Please check your GEMINI_API_KEY in .env file.\n   Get your key at: https://makersuite.google.com/app/apikey"
+                }
+            
             # Check for rate limit errors (429)
             if "429" in error_str or "Resource exhausted" in error_str or "rate limit" in error_str.lower():
                 if retry_count < 3:
-                    # Rate limit error - can retry after a delay
                     return {
                         "query_error": f"Rate limit exceeded. Retrying... (attempt {retry_count + 1}/3)",
                         "retry_count": retry_count + 1
                     }
                 else:
-                    # Max retries reached for rate limit
                     return {
                         "query_error": "Rate limit exceeded. Please wait a moment and try again later.",
                         "retry_count": retry_count
@@ -794,9 +798,17 @@ class BigQueryExecutorNode:
                 error=str(e)
             )
             
-            # Return error - graph will handle retry logic
+            # Return error with helpful messages
             error_msg = str(e)
-            if "BigQuery execution error:" not in error_msg:
+            
+            # Provide helpful guidance for common errors
+            if "credentials" in error_msg.lower() or "authentication" in error_msg.lower():
+                error_msg = "❌ BigQuery authentication failed.\n   Check GOOGLE_APPLICATION_CREDENTIALS in .env file.\n   Download service account key from: https://console.cloud.google.com/iam-admin/serviceaccounts"
+            elif "project" in error_msg.lower() and "not found" in error_msg.lower():
+                error_msg = "❌ Google Cloud project not found.\n   Check GOOGLE_CLOUD_PROJECT in .env file.\n   Find your project ID at: https://console.cloud.google.com/"
+            elif "API has not been used" in error_msg or "disabled" in error_msg.lower():
+                error_msg = "❌ BigQuery API is not enabled.\n   Enable it at: https://console.cloud.google.com/apis/library/bigquery.googleapis.com"
+            elif "BigQuery execution error:" not in error_msg:
                 error_msg = f"BigQuery execution error: {error_msg}"
             
             return {
