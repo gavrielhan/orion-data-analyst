@@ -34,7 +34,7 @@ class ContextNode:
         
         # Progress indicator
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → Loading schema context..."), end="\r")
+            print(OutputFormatter.info("  → ContextNode: Loading schema..."), end="\r")
         
         cache_timestamp = state.get("schema_cache_timestamp", 0)
         current_time = time.time()
@@ -134,6 +134,12 @@ class ApprovalNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Check if query requires user approval."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → ApprovalNode: Checking cost..."), end="\r")
+        
         estimated_cost = state.get("estimated_cost_gb", 0)
         validation_passed = state.get("validation_passed", False)
         
@@ -166,7 +172,7 @@ class ValidationNode:
         
         # Progress indicator
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → Validating SQL query..."), end="\r")
+            print(OutputFormatter.info("  → ValidationNode: Checking SQL..."), end="\r")
         
         sql_query = state.get("sql_query", "")
         
@@ -239,6 +245,12 @@ class InputNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Process user input and classify intent."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → InputNode: Processing query..."), end="\r")
+        
         user_query = state.get("user_query", "")
         query_lower = user_query.lower().strip()
         
@@ -867,11 +879,11 @@ class BigQueryExecutorNode:
                 for col in df.columns:
                     values = df[col].dropna().unique().tolist()[:20]  # Limit to 20 values
                     discovery_result += f"  {col}: {', '.join(map(str, values))}\n"
-                
-                return {
+            
+            return {
                     "discovery_result": discovery_result,
                     "discovery_query": None,  # Clear discovery query
-                    "query_error": None
+                "query_error": None
                 }
             
             # Regular SQL query results
@@ -940,6 +952,12 @@ class ResultCheckNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Analyze execution results and set routing flags."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → ResultCheckNode: Analyzing results..."), end="\r")
+        
         query_error = state.get("query_error")
         query_result = state.get("query_result")
         retry_count = state.get("retry_count", 0)
@@ -983,7 +1001,7 @@ class AnalysisNode:
         
         # Progress indicator
         if state.get("_verbose"):
-            print(OutputFormatter.info("  → Analyzing results..."), end="\r")
+            print(OutputFormatter.info("  → AnalysisNode: Analyzing data..."), end="\r")
         
         df = state.get("query_result")
         query_intent = state.get("query_intent", "general_query")

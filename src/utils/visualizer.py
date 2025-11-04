@@ -227,8 +227,11 @@ class Visualizer:
         # Limit to top 15 items for readability
         plot_df = df.head(15) if len(df) > 15 else df
         if hue_col and hue_col in df.columns:
-            sns.barplot(data=plot_df, x=x_col, y=y_col, hue=hue_col, palette="viridis")
-            plt.legend(title=hue_col, bbox_to_anchor=(1.05, 1), loc='upper left')
+            ax = sns.barplot(data=plot_df, x=x_col, y=y_col, hue=hue_col, palette="viridis")
+            # Only add legend if there are labeled artists
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                plt.legend(title=hue_col, bbox_to_anchor=(1.05, 1), loc='upper left')
         else:
             # Use hue=x_col with legend=False to maintain colorful bars without warning
             sns.barplot(data=plot_df, x=x_col, y=y_col, hue=x_col, palette="viridis", legend=False)
