@@ -163,7 +163,7 @@ class OrionGraph:
         
         return workflow
     
-    def invoke(self, user_query: str, conversation_history: list = None) -> dict:
+    def invoke(self, user_query: str, conversation_history: list = None, verbose: bool = True) -> dict:
         """Execute the agent with a user query and optional conversation history."""
         initial_state: AgentState = {
             "user_query": user_query,
@@ -186,7 +186,8 @@ class OrionGraph:
             "final_output": "",
             "retry_count": 0,
             "execution_time_sec": None,
-            "error_history": []
+            "error_history": [],
+            "_verbose": verbose  # For progress updates
         }
         
         result = self.app.invoke(initial_state)

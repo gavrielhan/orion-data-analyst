@@ -30,6 +30,12 @@ class ContextNode:
     @classmethod
     def execute(cls, state: AgentState) -> Dict[str, Any]:
         """Load schema and conversation context."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → Loading schema context..."), end="\r")
+        
         cache_timestamp = state.get("schema_cache_timestamp", 0)
         current_time = time.time()
         
@@ -156,6 +162,12 @@ class ValidationNode:
     @classmethod
     def execute(cls, state: AgentState) -> Dict[str, Any]:
         """Validate SQL query."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → Validating SQL query..."), end="\r")
+        
         sql_query = state.get("sql_query", "")
         
         if not sql_query:
@@ -384,6 +396,16 @@ Generate clean, valid SQL queries only.
     
     def execute(self, state: AgentState) -> Dict[str, Any]:
         """Generate SQL query from user query or answer meta-question."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            retry_count = state.get("retry_count", 0)
+            if retry_count > 0:
+                print(OutputFormatter.info(f"  → Generating SQL (retry {retry_count})..."), end="\r")
+            else:
+                print(OutputFormatter.info("  → Generating SQL query..."), end="\r")
+        
         user_query = state.get("user_query", "")
         context = self._get_schema_context()
         
@@ -758,6 +780,12 @@ class BigQueryExecutorNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Execute SQL query and return results."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → Executing query on BigQuery..."), end="\r")
+        
         sql_query = state.get("sql_query", "")
         
         if not sql_query:
@@ -887,6 +915,12 @@ class AnalysisNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Analyze data based on query intent."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → Analyzing results..."), end="\r")
+        
         df = state.get("query_result")
         query_intent = state.get("query_intent", "general_query")
         user_query = state.get("user_query", "").lower()
@@ -1147,6 +1181,12 @@ class InsightGeneratorNode:
     
     def execute(self, state: AgentState) -> Dict[str, Any]:
         """Generate insights from empty results or data analysis."""
+        from src.utils.formatter import OutputFormatter
+        
+        # Progress indicator
+        if state.get("_verbose"):
+            print(OutputFormatter.info("  → Generating insights..."), end="\r")
+        
         user_query = state.get("user_query", "")
         has_empty_results = state.get("has_empty_results", False)
         
@@ -1248,6 +1288,10 @@ class OutputNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Format output for display with analysis insights."""
+        # Clear progress indicator line
+        if state.get("_verbose"):
+            print(" " * 80, end="\r")  # Clear the line
+        
         # Check if final_output was already set (e.g., from META questions or empty results)
         existing_output = state.get("final_output", "")
         df = state.get("query_result")

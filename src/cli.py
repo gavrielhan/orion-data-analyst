@@ -243,10 +243,10 @@ def main():
                 print(OutputFormatter.info("Using cached result (instant) ⚡"))
                 result = cached_result
             else:
-                # Execute agent with conversation context
-                print(OutputFormatter.format("\n🤖 **Orion thinking...**"))
-                result = agent.invoke(user_query, conversation_history)
-                
+                # Execute agent with conversation context and show progress
+                print(OutputFormatter.format("\n🤖 **Orion working...**"))
+                result = agent.invoke(user_query, conversation_history, verbose=True)
+
                 # Handle approval if needed
                 requires_approval = result.get("requires_approval", False)
                 approval_reason = result.get("approval_reason")
