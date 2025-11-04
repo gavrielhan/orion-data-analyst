@@ -1,122 +1,382 @@
-# Orion - Data Analysis LangGraph Agent
+# 🌟 Orion - AI-Powered Data Analysis Agent
 
-An AI-powered Data Analysis Agent that connects to Google BigQuery's public e-commerce dataset and performs intelligent data exploration through natural language interaction.
+[![PyPI version](https://badge.fury.io/py/orion-data-analyst.svg)](https://pypi.org/project/orion-data-analyst/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-🔗 **Repository**: https://github.com/gavrielhan/orion-data-analyst
+An intelligent data analysis agent that transforms natural language questions into SQL queries, executes them on BigQuery, performs statistical analysis, and generates actionable business insights.
 
-## Overview
+🔗 **GitHub**: https://github.com/gavrielhan/orion-data-analyst  
+📦 **PyPI**: https://pypi.org/project/orion-data-analyst/
 
-Orion is an intelligent business analyst that:
-- Connects to BigQuery's `thelook_ecommerce` dataset
-- Generates dynamic SQL queries from natural language
-- Performs statistical analysis and data visualization
-- Provides actionable business insights
+---
 
-## Architecture
+## ✨ What is Orion?
 
-Built with **LangGraph**, Orion uses a modular node-based architecture:
+Orion is your AI business analyst that:
+- **Understands natural language** - Ask questions in plain English
+- **Generates smart SQL** - Powered by Google Gemini AI
+- **Analyzes data automatically** - Statistical analysis, trends, segmentation
+- **Provides insights** - Actionable recommendations with business context
+- **Creates visualizations** - Charts saved automatically
+- **Self-heals errors** - Automatically fixes and retries failed queries
+- **Remembers conversations** - Handles follow-up questions with context
 
-```
-User Query → InputNode → QueryBuilderNode → BigQueryExecutorNode → OutputNode
-```
+Built with **LangGraph** for modular AI reasoning and **Google BigQuery** for data warehousing.
 
-Each node handles a distinct analytical step, creating a directed graph of reasoning.
+---
 
-## Features (MVP)
+## 🚀 Quick Start
 
-✅ Natural language query processing  
-✅ Dynamic SQL generation with Gemini via Vertex AI  
-✅ BigQuery integration  
-✅ Basic result display  
-✅ CLI interface  
+### Installation
 
-## Setup
-
-### Prerequisites
-
-- Python 3.10+
-- Google account for Google Cloud and Gemini API access
-
-### Quick Start
-
-1. **Install dependencies**:
+**Option 1: Install from PyPI (Recommended)**
 ```bash
-pip install -r requirements.txt
+pip install orion-data-analyst
 ```
 
-2. **Get your API keys** - Follow this guide:
-   - **👉 [GETTING_KEYS.md](GETTING_KEYS.md) - Start here!** 
-   
-   Or see [SETUP.md](SETUP.md) for detailed setup instructions.
-
-3. **Configure your `.env` file**:
+**Option 2: One-Line Install Script**
 ```bash
+curl -sSL https://raw.githubusercontent.com/gavrielhan/orion-data-analyst/main/install.sh | bash
+```
+
+**Option 3: Install from Source**
+```bash
+git clone https://github.com/gavrielhan/orion-data-analyst.git
+cd orion-data-analyst
+pip install -e .
+```
+
+### Setup
+
+1. **Get API Keys** (see [GETTING_KEYS.md](GETTING_KEYS.md)):
+   - Google Cloud Project ID
+   - Google Cloud service account JSON key
+   - Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+
+2. **Configure `.env` file**:
+```bash
+# Copy example
 cp .env.example .env
-# Edit .env with your credentials
+
+# Edit with your credentials
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+GEMINI_API_KEY=your-gemini-api-key
 ```
 
-4. **Run Orion**:
+3. **Run Orion**:
 ```bash
-python -m src.cli
+orion
 ```
 
-## Usage
+---
 
-Start the interactive CLI:
+## 💡 Usage Examples
 
-```bash
-python -m src.cli
+### Basic Queries
+```
+You: show me top 10 products by revenue
+Orion: [Generates SQL, executes, analyzes, and displays ranked results]
+
+You: what are the sales trends for the last 6 months?
+Orion: [Creates time-series analysis with month-over-month growth]
+
+You: segment customers by purchase behavior
+Orion: [Performs RFM analysis with customer segments]
 ```
 
-Example queries:
-- "What are total sales?"
-- "Show me the number of orders by status"
-- "List the top 10 products by revenue"
+### Follow-up Questions
+```
+You: show top customers
+Orion: [Displays ranked customer list]
 
-## Project Structure
+You: show the same for last quarter
+Orion: [Uses conversation context to apply date filter]
+
+You: break that down by region
+Orion: [Further segments the previous results]
+```
+
+### Visualizations & Exports
+```
+You: create a bar chart of sales by category
+Orion: [Generates chart and saves to ~/orion_results/]
+
+You: save this as csv
+Orion: [Exports results to ~/orion_results/results_TIMESTAMP.csv]
+```
+
+### Meta-Questions (Instant Responses)
+```
+You: what can you do?
+Orion: [Explains capabilities without querying database]
+
+You: which datasets can you query?
+Orion: [Lists available tables and schemas]
+```
+
+---
+
+## 🏗️ Architecture
+
+Orion uses a **modular node-based architecture** powered by LangGraph:
 
 ```
-.
+┌─────────────┐
+│ User Query  │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐     Fast-path for      ┌────────────┐
+│   InputNode     │────common questions────▶│ OutputNode │
+└──────┬──────────┘                         └────────────┘
+       │
+       ▼
+┌──────────────────┐
+│   ContextNode    │  • Load schema & conversation history
+└──────┬───────────┘
+       │
+       ▼
+┌───────────────────┐
+│ QueryBuilderNode  │  • Generate SQL with Gemini AI
+└──────┬────────────┘  • Handle retries with error context
+       │
+       ▼
+┌──────────────────┐
+│ ValidationNode   │  • Security checks (block DROP/DELETE)
+└──────┬───────────┘  • Cost estimation & syntax validation
+       │
+       ▼
+┌──────────────────┐
+│  ApprovalNode    │  • Request approval for expensive queries
+└──────┬───────────┘
+       │
+       ▼
+┌─────────────────────┐
+│ BigQueryExecutorNode│  • Execute SQL on BigQuery
+└──────┬──────────────┘  • Track execution time & cost
+       │
+       ▼
+┌──────────────────┐
+│ ResultCheckNode  │  • Route based on results
+└──────┬───────────┘    ├─ Error → Retry
+       │                ├─ Empty → Explain
+       ▼                └─ Success → Analyze
+┌──────────────────┐
+│   AnalysisNode   │  • Statistical analysis
+└──────┬───────────┘  • Trends, ranking, segmentation
+       │              • RFM, anomaly detection
+       ▼
+┌────────────────────┐
+│ InsightGenerator   │  • Generate natural language insights
+└──────┬─────────────┘  • Business recommendations
+       │
+       ▼
+┌──────────────────┐
+│   OutputNode     │  • Format results beautifully
+└──────┬───────────┘  • Display metadata (time, cost)
+       │
+       ▼
+   ┌──────┐
+   │ END  │
+   └──────┘
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed component descriptions.
+
+---
+
+## 🎯 Key Features
+
+### 🤖 Intelligent SQL Generation
+- Natural language to SQL using Google Gemini
+- Automatic schema context injection
+- Self-healing with error feedback loops (max 3 retries)
+- Handles complex JOINs across multiple tables
+
+### 🛡️ Safety & Validation
+- Blocks malicious queries (DROP, DELETE, etc.)
+- BigQuery cost estimation before execution
+- Query syntax validation with dry-run
+- Row limits to prevent runaway queries
+- Human-in-the-loop approval for expensive operations
+
+### 📊 Advanced Analytics
+- **Ranking**: Top N analysis with contribution %
+- **Trends**: Time-series with growth rates
+- **Segmentation**: Group-by analysis
+- **RFM Analysis**: Customer segmentation (Recency, Frequency, Monetary)
+- **Anomaly Detection**: Outlier identification
+- **Comparative Analysis**: Period-over-period comparison
+
+### 💬 Conversation Memory
+- Remembers last 5 interactions
+- Context-aware follow-up questions
+- Session save/load for long conversations
+- Automatic context pruning for token efficiency
+
+### 📈 Visualizations
+- **Chart Types**: Bar, Line, Pie, Scatter, Box, Candle
+- Auto-saved to `~/orion_results/` (configurable)
+- Smart chart type selection based on data
+- CSV export for further analysis
+
+### ⚡ Performance Optimizations
+- **Query Caching**: Instant responses for repeated queries (1-hour TTL)
+- **Schema Caching**: Reduces API calls to BigQuery metadata
+- **Rate Limiting**: Token bucket algorithm for Gemini API
+- **Streaming**: Large result handling
+
+### 🎨 Polished UX
+- Colored terminal output with formatted text
+- Progress indicators at each step
+- Helpful error messages with action links
+- Startup validation with setup guidance
+
+---
+
+## 🗂️ Project Structure
+
+```
+orion-data-analyst/
 ├── src/
 │   ├── __init__.py
-│   ├── cli.py                 # Command-line interface
+│   ├── cli.py                    # CLI interface with session management
+│   ├── config.py                 # Configuration loader (.env)
 │   ├── agent/
 │   │   ├── __init__.py
-│   │   ├── graph.py          # LangGraph orchestration
-│   │   ├── nodes.py          # All agent nodes
-│   │   └── state.py          # Agent state management
-│   ├── config.py             # Configuration loader
+│   │   ├── graph.py              # LangGraph workflow orchestration
+│   │   ├── nodes.py              # All 10 agent nodes
+│   │   └── state.py              # Centralized AgentState (TypedDict)
 │   └── utils/
 │       ├── __init__.py
-│       └── bigquery.py       # BigQuery utilities
-├── tests/                     # Test suite
-├── requirements.txt
-├── .env.example
-└── README.md
+│       ├── cache.py              # Query result caching
+│       ├── formatter.py          # ANSI terminal formatting
+│       ├── rate_limiter.py       # API rate limiting
+│       ├── schema_fetcher.py     # BigQuery schema utilities
+│       └── visualizer.py         # Chart generation (matplotlib/seaborn)
+├── tests/                        # Test suite
+├── .env.example                  # Configuration template
+├── requirements.txt              # Dependencies
+├── setup.py                      # PyPI packaging
+├── pyproject.toml                # Modern Python packaging
+├── install.sh                    # One-line installer
+├── ARCHITECTURE.md               # Detailed architecture docs
+├── GETTING_KEYS.md               # API key setup guide
+└── README.md                     # This file
 ```
 
-## Dataset
+---
 
-The project uses Google BigQuery's public e-commerce dataset:
+## ⚙️ Configuration
+
+All configuration via `.env` file:
+
+```bash
+# REQUIRED
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+GEMINI_API_KEY=your-gemini-api-key
+
+# OPTIONAL
+GEMINI_MODEL=gemini-2.0-flash-exp              # Choose Gemini model
+ORION_OUTPUT_DIR=~/orion_results               # Results directory
+BIGQUERY_DATASET=bigquery-public-data.thelook_ecommerce
+MAX_QUERY_ROWS=10000                           # Row limit
+QUERY_TIMEOUT=300                              # Timeout (seconds)
+```
+
+---
+
+## 📊 Dataset
+
+Uses Google BigQuery's public e-commerce dataset:
 - **Dataset**: `bigquery-public-data.thelook_ecommerce`
-- **Tables**: orders, order_items, products, users
+- **Tables**: `orders`, `order_items`, `products`, `users`
+- **Schema**: Automatically loaded with column descriptions
 
-## Development
+---
 
-Run tests:
+## 🔧 Development
+
+### Run from Source
+```bash
+git clone https://github.com/gavrielhan/orion-data-analyst.git
+cd orion-data-analyst
+pip install -e .
+orion
+```
+
+### Run Tests
 ```bash
 pytest tests/
 ```
 
-## License
+### Build for PyPI
+```bash
+python -m build
+python -m twine upload dist/*
+```
 
-MIT
+---
 
-## Roadmap
+## 📝 Commands
 
-- [x] Milestone 1: Foundation & Happy Path MVP
-- [ ] Milestone 2: Validation & Error Handling
-- [ ] Milestone 3: Advanced Analysis & Visualization
-- [ ] Milestone 4: Conversation Memory
-- [ ] Milestone 5: Production Readiness
+In the Orion CLI:
+- `exit` / `quit` / `q` - Exit Orion
+- `save session` - Save conversation history
+- `load session [path]` - Load previous session
+- `clear cache` - Clear query cache
 
+---
+
+## 🛠️ Technology Stack
+
+| Component | Technology |
+|-----------|-----------|
+| **AI Orchestration** | LangGraph |
+| **LLM Integration** | LangChain |
+| **AI Model** | Google Gemini 2.0 Flash |
+| **Data Warehouse** | Google BigQuery |
+| **Data Processing** | pandas |
+| **Visualization** | matplotlib, seaborn |
+| **State Management** | TypedDict (Python) |
+| **Configuration** | python-dotenv |
+| **Packaging** | setuptools, PyPI |
+
+---
+
+## 📜 License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+---
+
+## 🤝 Contributing
+
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+---
+
+## 🙏 Acknowledgments
+
+- Built with [LangGraph](https://github.com/langchain-ai/langgraph) by LangChain
+- Powered by [Google Gemini](https://ai.google.dev/)
+- Data from [BigQuery Public Datasets](https://cloud.google.com/bigquery/public-data)
+
+---
+
+## 📧 Support
+
+- **Issues**: [GitHub Issues](https://github.com/gavrielhan/orion-data-analyst/issues)
+- **Documentation**: [GitHub Wiki](https://github.com/gavrielhan/orion-data-analyst)
+- **Email**: gavriel.hannuna@gmail.com
+
+---
+
+**Made with ❤️ by Gavriel Hannuna**
