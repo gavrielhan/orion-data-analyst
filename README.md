@@ -3,7 +3,6 @@
 [![PyPI version](https://badge.fury.io/py/orion-data-analyst.svg)](https://pypi.org/project/orion-data-analyst/)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
 [![LangGraph](https://img.shields.io/badge/🦜_LangGraph-0.2+-green.svg)](https://langchain-ai.github.io/langgraph/)
 [![LangChain](https://img.shields.io/badge/🦜_LangChain-0.3+-green.svg)](https://www.langchain.com/)
 [![Google Cloud](https://img.shields.io/badge/Google_Cloud-BigQuery-4285F4?logo=google-cloud)](https://cloud.google.com/bigquery)
