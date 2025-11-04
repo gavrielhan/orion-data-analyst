@@ -4,7 +4,9 @@ from langgraph.graph import StateGraph, END
 from src.agent.state import AgentState
 from src.agent.nodes import (
     InputNode,
+    ContextNode,
     QueryBuilderNode,
+    ValidationNode,
     BigQueryExecutorNode,
     OutputNode,
     query_builder_node
@@ -18,48 +20,53 @@ class OrionGraph:
         self.graph = self._build_graph()
         self.app = self.graph.compile()
     
-    def _check_input_routing(self, state: AgentState) -> str:
-        """Route from input to query builder."""
-        # All queries go to query_builder first - it will decide if meta or SQL
+    def _route_from_context(self, state: AgentState) -> str:
+        """Route from context to query builder."""
         return "query_builder"
     
-    def _check_if_direct_output(self, state: AgentState) -> str:
-        """Check if QueryBuilder returned a direct output (error message)."""
-        # Check if final_output exists and is not empty
+    def _route_from_query_builder(self, state: AgentState) -> str:
+        """Route from query builder - check for meta answers or SQL."""
         final_output = state.get("final_output", "")
         sql_query = state.get("sql_query", "")
         query_error = state.get("query_error")
         retry_count = state.get("retry_count", 0)
         
+        # If it's a meta answer, go directly to output
         if final_output and final_output.strip():
             return "output"
         
+        # If there's an error, check if we should retry
         if query_error:
-            # If there's an error and no SQL query, check if we should retry
             if not sql_query:
-                # Check if we should retry (for missing prefix errors or rate limits)
                 should_retry = (
                     ("Invalid response format" in query_error and retry_count < 3) or
                     ("Rate limit" in query_error and retry_count < 3)
                 )
                 if should_retry:
                     return "query_builder"
-                # Otherwise, go to output with error
                 return "output"
         
-        # No error, proceed to BigQuery execution
+        # SQL generated successfully, proceed to validation
+        return "validation"
+    
+    def _route_from_validation(self, state: AgentState) -> str:
+        """Route from validation - execute if passed, output if failed."""
+        validation_passed = state.get("validation_passed", False)
+        query_error = state.get("query_error")
+        
+        if query_error or not validation_passed:
+            return "output"
+        
         return "bigquery_executor"
     
-    def _check_retry_needed(self, state: AgentState) -> str:
-        """Check if we should retry after BigQuery error."""
+    def _route_from_executor(self, state: AgentState) -> str:
+        """Route from executor - retry on error or output on success."""
         query_error = state.get("query_error")
         retry_count = state.get("retry_count", 0)
         
-        # If there's an error and we haven't exceeded max retries, retry
         if query_error and retry_count < 3:
             return "query_builder"
         
-        # Otherwise, go to output
         return "output"
     
     def _build_graph(self) -> StateGraph:
@@ -68,31 +75,40 @@ class OrionGraph:
         
         # Add nodes
         workflow.add_node("input", InputNode.execute)
+        workflow.add_node("context", ContextNode.execute)
         workflow.add_node("query_builder", query_builder_node.execute)
+        workflow.add_node("validation", ValidationNode.execute)
         workflow.add_node("bigquery_executor", BigQueryExecutorNode.execute)
         workflow.add_node("output", OutputNode.execute)
         
         # Define edges
         workflow.set_entry_point("input")
+        workflow.add_edge("input", "context")
         workflow.add_conditional_edges(
-            "input",
-            self._check_input_routing,
-            {
-                "output": "output",
-                "query_builder": "query_builder"
-            }
+            "context",
+            self._route_from_context,
+            {"query_builder": "query_builder"}
         )
         workflow.add_conditional_edges(
             "query_builder",
-            self._check_if_direct_output,
+            self._route_from_query_builder,
             {
                 "output": "output",
-                "bigquery_executor": "bigquery_executor"
+                "validation": "validation",
+                "query_builder": "query_builder"  # For retries
+            }
+        )
+        workflow.add_conditional_edges(
+            "validation",
+            self._route_from_validation,
+            {
+                "bigquery_executor": "bigquery_executor",
+                "output": "output"
             }
         )
         workflow.add_conditional_edges(
             "bigquery_executor",
-            self._check_retry_needed,
+            self._route_from_executor,
             {
                 "query_builder": "query_builder",
                 "output": "output"
@@ -107,12 +123,17 @@ class OrionGraph:
         initial_state: AgentState = {
             "user_query": user_query,
             "query_intent": "",
+            "schema_context": None,
+            "schema_cache_timestamp": None,
             "sql_query": "",
+            "validation_passed": None,
+            "estimated_cost_gb": None,
             "query_result": None,
             "query_error": None,
             "analysis_result": None,
             "final_output": "",
-            "retry_count": 0
+            "retry_count": 0,
+            "execution_time_sec": None
         }
         
         result = self.app.invoke(initial_state)

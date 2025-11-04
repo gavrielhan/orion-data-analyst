@@ -10,8 +10,16 @@ class AgentState(TypedDict):
     user_query: str
     query_intent: str
     
+    # Schema context
+    schema_context: Optional[str]
+    schema_cache_timestamp: Optional[float]
+    
     # SQL generation
     sql_query: str
+    
+    # Validation
+    validation_passed: Optional[bool]
+    estimated_cost_gb: Optional[float]
     
     # BigQuery execution
     query_result: Optional[Any]
@@ -25,4 +33,5 @@ class AgentState(TypedDict):
     
     # Metadata
     retry_count: int
+    execution_time_sec: Optional[float]
 

@@ -3,15 +3,168 @@
 import pandas as pd
 import re
 import json
+import time
 from pathlib import Path
 from typing import Dict, Any
+from datetime import datetime
 import google.generativeai as genai
+from google.cloud import bigquery
 
 from src.config import config
 from src.agent.state import AgentState
 
 
 # MetaQuestionHandler removed - LLM now decides if query is meta or SQL
+
+
+class ContextNode:
+    """Dynamically retrieves and caches BigQuery schema information."""
+    
+    CACHE_DURATION_SEC = 3600  # 1 hour cache
+    SCHEMA_FILE = Path(__file__).parent.parent.parent / "schemas.json"
+    
+    @classmethod
+    def execute(cls, state: AgentState) -> Dict[str, Any]:
+        """Load or refresh schema context with caching."""
+        # Check if cache is still valid
+        cache_timestamp = state.get("schema_cache_timestamp", 0)
+        current_time = time.time()
+        
+        if cache_timestamp and (current_time - cache_timestamp) < cls.CACHE_DURATION_SEC:
+            # Cache is valid, reuse existing schema
+            return {}
+        
+        # Load schema from file or fetch from BigQuery
+        schema_context = cls._load_schema()
+        
+        return {
+            "schema_context": schema_context,
+            "schema_cache_timestamp": current_time
+        }
+    
+    @classmethod
+    def _load_schema(cls) -> str:
+        """Load schema from file or fetch from BigQuery if file is missing/stale."""
+        if cls.SCHEMA_FILE.exists():
+            # Check file modification time
+            file_mod_time = cls.SCHEMA_FILE.stat().st_mtime
+            if (time.time() - file_mod_time) < cls.CACHE_DURATION_SEC:
+                # File is fresh, use it
+                with open(cls.SCHEMA_FILE, 'r') as f:
+                    schemas = json.load(f)
+                return cls._format_schema(schemas)
+        
+        # File doesn't exist or is stale - fetch from BigQuery
+        try:
+            schemas = cls._fetch_from_bigquery()
+            # Save to file for future use
+            with open(cls.SCHEMA_FILE, 'w') as f:
+                json.dump(schemas, f, indent=2)
+            return cls._format_schema(schemas)
+        except Exception as e:
+            # Fallback to file if fetch fails
+            if cls.SCHEMA_FILE.exists():
+                with open(cls.SCHEMA_FILE, 'r') as f:
+                    schemas = json.load(f)
+                return cls._format_schema(schemas)
+            raise Exception(f"Failed to load schema: {e}")
+    
+    @classmethod
+    def _fetch_from_bigquery(cls) -> dict:
+        """Fetch schema directly from BigQuery."""
+        client = bigquery.Client(project=config.google_cloud_project)
+        dataset_ref = client.dataset("thelook_ecommerce", project="bigquery-public-data")
+        
+        schemas = {}
+        for table in client.list_tables(dataset_ref):
+            if table.table_id in ["orders", "order_items", "products", "users"]:
+                table_ref = dataset_ref.table(table.table_id)
+                table_obj = client.get_table(table_ref)
+                
+                schemas[table.table_id] = {
+                    "description": table_obj.description or "",
+                    "columns": [
+                        {
+                            "name": field.name,
+                            "field_type": field.field_type,
+                            "mode": field.mode,
+                            "description": field.description or ""
+                        }
+                        for field in table_obj.schema
+                    ]
+                }
+        
+        return schemas
+    
+    @classmethod
+    def _format_schema(cls, schemas: dict) -> str:
+        """Format schema for LLM context."""
+        parts = ["Available tables in bigquery-public-data.thelook_ecommerce:\n"]
+        
+        for table_name, schema in schemas.items():
+            parts.append(f"\n{table_name}:")
+            for col in schema["columns"]:
+                parts.append(f"  - {col['name']} ({col['field_type']})")
+        
+        parts.append("\nJOINs: orders.user_id=users.id, orders.order_id=order_items.order_id, order_items.product_id=products.id")
+        return "\n".join(parts)
+
+
+class ValidationNode:
+    """Validates SQL queries for security, syntax, and cost."""
+    
+    BLOCKED_KEYWORDS = ["DROP", "DELETE", "TRUNCATE", "ALTER", "CREATE", "INSERT", "UPDATE"]
+    MAX_COST_GB = 10.0  # Maximum 10GB scan
+    
+    @classmethod
+    def execute(cls, state: AgentState) -> Dict[str, Any]:
+        """Validate SQL query."""
+        sql_query = state.get("sql_query", "")
+        
+        if not sql_query:
+            return {"validation_passed": False, "query_error": "No SQL query to validate"}
+        
+        # Security check: Block dangerous operations
+        sql_upper = sql_query.upper()
+        for keyword in cls.BLOCKED_KEYWORDS:
+            if re.search(rf'\b{keyword}\b', sql_upper):
+                return {
+                    "validation_passed": False,
+                    "query_error": f"Security violation: {keyword} operations are not allowed"
+                }
+        
+        # Enforce row limit
+        if "LIMIT" not in sql_upper:
+            sql_query += "\nLIMIT 1000"
+        
+        # Cost estimation using BigQuery dry_run
+        try:
+            client = bigquery.Client(project=config.google_cloud_project)
+            job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+            query_job = client.query(sql_query, job_config=job_config)
+            
+            # Get estimated bytes processed
+            bytes_processed = query_job.total_bytes_processed or 0
+            gb_processed = bytes_processed / (1024 ** 3)
+            
+            if gb_processed > cls.MAX_COST_GB:
+                return {
+                    "validation_passed": False,
+                    "estimated_cost_gb": gb_processed,
+                    "query_error": f"Query too expensive: {gb_processed:.2f}GB (max: {cls.MAX_COST_GB}GB)"
+                }
+            
+            return {
+                "validation_passed": True,
+                "estimated_cost_gb": gb_processed,
+                "sql_query": sql_query  # Return potentially modified query (with LIMIT)
+            }
+            
+        except Exception as e:
+            return {
+                "validation_passed": False,
+                "query_error": f"Validation error: {str(e)}"
+            }
 
 class InputNode:
     """Receives and normalizes user query."""
@@ -496,13 +649,11 @@ Your response (MUST start with META: or SQL:):
 
 
 class BigQueryExecutorNode:
-    """Executes SQL query on BigQuery."""
+    """Executes SQL query on BigQuery with logging."""
     
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Execute SQL query and return results."""
-        from google.cloud import bigquery
-        
         sql_query = state.get("sql_query", "")
         
         if not sql_query:
@@ -514,17 +665,37 @@ class BigQueryExecutorNode:
         try:
             client = bigquery.Client(project=config.google_cloud_project)
             
+            # Track execution time
+            start_time = time.time()
             query_job = client.query(sql_query)
             df = query_job.to_dataframe(max_results=config.max_query_rows)
+            execution_time = time.time() - start_time
+            
+            # Log query execution
+            BigQueryExecutorNode._log_query(
+                sql_query, 
+                execution_time, 
+                query_job.total_bytes_processed,
+                success=True
+            )
             
             return {
                 "query_result": df,
-                "query_error": None
+                "query_error": None,
+                "execution_time_sec": execution_time
             }
         except Exception as e:
+            # Log failed query
+            BigQueryExecutorNode._log_query(
+                sql_query, 
+                0, 
+                0,
+                success=False,
+                error=str(e)
+            )
+            
             # Return error - graph will handle retry logic
             error_msg = str(e)
-            # Extract the core error message (remove location/job ID if present)
             if "BigQuery execution error:" not in error_msg:
                 error_msg = f"BigQuery execution error: {error_msg}"
             
@@ -533,10 +704,31 @@ class BigQueryExecutorNode:
                 "query_result": None,
                 "retry_count": state.get("retry_count", 0) + 1
             }
+    
+    @staticmethod
+    def _log_query(sql: str, exec_time: float, bytes_processed: int, success: bool, error: str = None):
+        """Log query execution details."""
+        log_file = Path(__file__).parent.parent.parent / "query_log.jsonl"
+        
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "query": sql[:500],  # Truncate long queries
+            "execution_time_sec": round(exec_time, 3),
+            "bytes_processed": bytes_processed,
+            "cost_gb": round(bytes_processed / (1024 ** 3), 6) if bytes_processed else 0,
+            "success": success,
+            "error": error
+        }
+        
+        try:
+            with open(log_file, 'a') as f:
+                f.write(json.dumps(log_entry) + '\n')
+        except Exception:
+            pass  # Silent fail on logging errors
 
 
 class OutputNode:
-    """Formats and returns final output."""
+    """Formats and returns final output with metadata."""
     
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
@@ -545,26 +737,38 @@ class OutputNode:
         existing_output = state.get("final_output", "")
         df = state.get("query_result")
         error = state.get("query_error")
+        exec_time = state.get("execution_time_sec")
+        cost_gb = state.get("estimated_cost_gb")
         
         if existing_output and existing_output.strip():
             return {
                 "final_output": existing_output
             }
         
-        # Otherwise, format based on query results or errors
+        # Build output with metadata
+        output_parts = []
         
         if error:
-            output = f"❌ Error: {error}"
+            output_parts.append(f"❌ Error: {error}")
         elif df is not None:
+            # Show cost estimate if available
+            if cost_gb is not None and cost_gb > 0:
+                output_parts.append(f"💰 Estimated cost: {cost_gb:.4f} GB scanned")
+            
             if df.empty:
-                output = "No results found."
+                output_parts.append("No results found.")
             else:
-                output = f"\n📊 Results:\n\n{df.to_string(index=False)}\n"
+                output_parts.append(f"📊 Results ({len(df)} rows):\n")
+                output_parts.append(df.to_string(index=False))
+            
+            # Show execution time if available
+            if exec_time is not None:
+                output_parts.append(f"\n⏱️  Executed in {exec_time:.2f}s")
         else:
-            output = "No results generated."
+            output_parts.append("No results generated.")
         
         return {
-            "final_output": output
+            "final_output": "\n".join(output_parts)
         }
 
 

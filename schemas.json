@@ -1,66 +1,5 @@
 {
-  "orders": {
-    "table_name": "orders",
-    "description": "Programatically generated orders for The Look fictitious e-commerce store",
-    "columns": [
-      {
-        "name": "order_id",
-        "field_type": "INTEGER",
-        "mode": "NULLABLE",
-        "description": ""
-      },
-      {
-        "name": "user_id",
-        "field_type": "INTEGER",
-        "mode": "NULLABLE",
-        "description": ""
-      },
-      {
-        "name": "status",
-        "field_type": "STRING",
-        "mode": "NULLABLE",
-        "description": ""
-      },
-      {
-        "name": "gender",
-        "field_type": "STRING",
-        "mode": "NULLABLE",
-        "description": ""
-      },
-      {
-        "name": "created_at",
-        "field_type": "TIMESTAMP",
-        "mode": "NULLABLE",
-        "description": ""
-      },
-      {
-        "name": "returned_at",
-        "field_type": "TIMESTAMP",
-        "mode": "NULLABLE",
-        "description": ""
-      },
-      {
-        "name": "shipped_at",
-        "field_type": "TIMESTAMP",
-        "mode": "NULLABLE",
-        "description": ""
-      },
-      {
-        "name": "delivered_at",
-        "field_type": "TIMESTAMP",
-        "mode": "NULLABLE",
-        "description": ""
-      },
-      {
-        "name": "num_of_item",
-        "field_type": "INTEGER",
-        "mode": "NULLABLE",
-        "description": ""
-      }
-    ]
-  },
   "order_items": {
-    "table_name": "order_items",
     "description": "Programatically generated order items for The Look fictitious e-commerce store",
     "columns": [
       {
@@ -131,8 +70,66 @@
       }
     ]
   },
+  "orders": {
+    "description": "Programatically generated orders for The Look fictitious e-commerce store",
+    "columns": [
+      {
+        "name": "order_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "user_id",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "status",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "gender",
+        "field_type": "STRING",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "created_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "returned_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "shipped_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "delivered_at",
+        "field_type": "TIMESTAMP",
+        "mode": "NULLABLE",
+        "description": ""
+      },
+      {
+        "name": "num_of_item",
+        "field_type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": ""
+      }
+    ]
+  },
   "products": {
-    "table_name": "products",
     "description": "The Look fictitious e-commerce dataset - products table",
     "columns": [
       {
@@ -192,7 +189,6 @@
     ]
   },
   "users": {
-    "table_name": "users",
     "description": "Programatically generated users for The Look fictitious e-commerce store",
     "columns": [
       {
