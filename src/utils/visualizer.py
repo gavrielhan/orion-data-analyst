@@ -31,6 +31,135 @@ class Visualizer:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return self.results_dir / f"{chart_type}_{timestamp}.png"
     
+    def _smart_column_selection(self, df: pd.DataFrame, chart_type: str) -> Tuple[str, str]:
+        """
+        Intelligently select x and y columns based on data types and chart type.
+        Returns (x_col, y_col) tuple.
+        """
+        if len(df.columns) == 0:
+            return None, None
+        if len(df.columns) == 1:
+            return df.columns[0], df.columns[0]
+        
+        # Analyze columns
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+        
+        # Try to detect datetime columns from strings
+        for col in categorical_cols[:]:
+            if any(kw in col.lower() for kw in ['date', 'time', 'year', 'month', 'day']):
+                try:
+                    pd.to_datetime(df[col].head(10))
+                    datetime_cols.append(col)
+                    categorical_cols.remove(col)
+                except:
+                    pass
+        
+        # Calculate cardinality for categorical columns
+        cat_cardinality = {col: df[col].nunique() for col in categorical_cols}
+        
+        # Select based on chart type
+        if chart_type in ['bar', 'pie']:
+            # Categorical x-axis, numeric y-axis
+            x_col = self._select_categorical_column(categorical_cols, cat_cardinality)
+            y_col = self._select_numeric_column(numeric_cols, df)
+            
+        elif chart_type == 'line':
+            # Datetime/ordered x-axis, numeric y-axis
+            if datetime_cols:
+                x_col = datetime_cols[0]
+            elif categorical_cols:
+                # Use categorical if it looks ordered (dates, months, etc.)
+                x_col = self._select_ordered_column(categorical_cols, df)
+            else:
+                x_col = numeric_cols[0] if numeric_cols else df.columns[0]
+            y_col = self._select_numeric_column(numeric_cols, df, exclude=[x_col])
+            
+        elif chart_type == 'scatter':
+            # Two numeric columns
+            if len(numeric_cols) >= 2:
+                x_col = numeric_cols[0]
+                y_col = numeric_cols[1]
+            else:
+                x_col = df.columns[0]
+                y_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+                
+        elif chart_type == 'box':
+            # Single numeric column
+            y_col = self._select_numeric_column(numeric_cols, df)
+            x_col = y_col
+            
+        else:
+            # Default: categorical x, numeric y
+            x_col = self._select_categorical_column(categorical_cols, cat_cardinality)
+            y_col = self._select_numeric_column(numeric_cols, df)
+        
+        # Fallback if selection failed
+        if not x_col:
+            x_col = df.columns[0]
+        if not y_col:
+            y_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+        
+        return x_col, y_col
+    
+    def _select_categorical_column(self, cat_cols: list, cardinality: dict) -> Optional[str]:
+        """Select the best categorical column (prefer low cardinality, meaningful names)."""
+        if not cat_cols:
+            return None
+        
+        # Prefer columns with reasonable cardinality (2-20 unique values)
+        good_cardinality = [col for col in cat_cols if 2 <= cardinality.get(col, 0) <= 20]
+        if good_cardinality:
+            # Prioritize by name semantics
+            for col in good_cardinality:
+                col_lower = col.lower()
+                if any(kw in col_lower for kw in ['name', 'category', 'type', 'status', 'product', 'customer']):
+                    return col
+            return good_cardinality[0]
+        
+        # If no good cardinality, use first categorical
+        return cat_cols[0]
+    
+    def _select_numeric_column(self, num_cols: list, df: pd.DataFrame, exclude: list = None) -> Optional[str]:
+        """Select the best numeric column (prefer aggregated values, revenue, sales)."""
+        if not num_cols:
+            return None
+        
+        exclude = exclude or []
+        available = [col for col in num_cols if col not in exclude]
+        if not available:
+            return num_cols[0] if num_cols else None
+        
+        # Prioritize by name semantics (revenue, sales, total, amount, price, count)
+        priority_keywords = ['revenue', 'sales', 'total', 'amount', 'price', 'count', 'sum']
+        for col in available:
+            col_lower = col.lower()
+            if any(kw in col_lower for kw in priority_keywords):
+                return col
+        
+        # Otherwise, use the column with the largest range (most interesting to visualize)
+        ranges = {col: df[col].max() - df[col].min() for col in available if df[col].dtype in ['int64', 'float64']}
+        if ranges:
+            return max(ranges, key=ranges.get)
+        
+        return available[0]
+    
+    def _select_ordered_column(self, cat_cols: list, df: pd.DataFrame) -> Optional[str]:
+        """Select categorical column that represents ordered data (dates, months, etc.)."""
+        if not cat_cols:
+            return None
+        
+        # Check for date-like or ordered column names
+        ordered_keywords = ['date', 'time', 'year', 'month', 'day', 'quarter', 'week']
+        for col in cat_cols:
+            col_lower = col.lower()
+            if any(kw in col_lower for kw in ordered_keywords):
+                return col
+        
+        # Default to first categorical
+        return cat_cols[0]
+    
     def create_chart(self, df: pd.DataFrame, chart_type: str, 
                     x_col: Optional[str] = None, y_col: Optional[str] = None,
                     title: Optional[str] = None) -> Optional[str]:
@@ -41,13 +170,11 @@ class Visualizer:
         try:
             plt.figure(figsize=(10, 6))
             
-            # Auto-detect columns if not specified
-            if x_col is None and len(df.columns) > 0:
-                x_col = df.columns[0]
-            if y_col is None and len(df.columns) > 1:
-                y_col = df.columns[1]
-            
             chart_type = chart_type.lower()
+            
+            # Intelligently auto-detect columns if not specified
+            if x_col is None or y_col is None:
+                x_col, y_col = self._smart_column_selection(df, chart_type)
             
             if chart_type == "bar":
                 self._create_bar_chart(df, x_col, y_col, title)

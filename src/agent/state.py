@@ -31,6 +31,7 @@ class AgentState(TypedDict):
     has_empty_results: Optional[bool]
     key_findings: Optional[list]  # Structured insights
     visualization_path: Optional[str]  # Path to saved chart
+    visualization_suggestion: Optional[dict]  # {chart_type, x_col, y_col, title}
     
     # Output
     final_output: str

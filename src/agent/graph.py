@@ -206,6 +206,7 @@ class OrionGraph:
             "has_empty_results": None,
             "key_findings": None,
             "visualization_path": None,
+            "visualization_suggestion": None,
             "conversation_history": conversation_history or [],
             "requires_approval": None,
             "approval_reason": None,

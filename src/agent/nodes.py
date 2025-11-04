@@ -1310,6 +1310,9 @@ Possible reasons: filters too restrictive, no data for time period, typos, etc."
         if df is not None and len(df) <= 10:
             data_summary += f"\n\nData preview:\n{df.to_string(index=False)}"
         
+        # Generate visualization suggestion
+        viz_suggestion = self._suggest_visualization(user_query, df, analysis_type)
+        
         prompt = f"""You are a business analyst. Generate actionable insights from this data analysis.
 
 User question: {user_query}
@@ -1336,14 +1339,91 @@ Keep it concise and business-focused. Use bullet points."""
             
             insights = response.text.strip() if response and hasattr(response, 'text') else "Analysis complete."
             
-            return {
-                "analysis_result": insights
-            }
+            result = {"analysis_result": insights}
+            if viz_suggestion:
+                result["visualization_suggestion"] = viz_suggestion
+            
+            return result
         except Exception:
             # Fallback to key findings
-            return {
+            result = {
                 "analysis_result": "\n".join(key_findings) if key_findings else "Analysis complete."
             }
+            if viz_suggestion:
+                result["visualization_suggestion"] = viz_suggestion
+            return result
+    
+    def _suggest_visualization(self, user_query: str, df, analysis_type: str) -> dict:
+        """Use LLM to suggest the best visualization configuration based on query and data."""
+        if df is None or len(df) == 0:
+            return None
+        
+        # Get column info
+        columns_info = []
+        for col in df.columns:
+            dtype = str(df[col].dtype)
+            sample_values = df[col].head(3).tolist()
+            unique_count = df[col].nunique()
+            columns_info.append(f"- {col} ({dtype}, {unique_count} unique values): {sample_values}")
+        
+        columns_str = "\n".join(columns_info)
+        
+        prompt = f"""Based on the user's query and data, suggest the best visualization.
+
+User query: {user_query}
+Analysis type: {analysis_type}
+
+Available columns:
+{columns_str}
+
+Suggest the BEST chart type and axis configuration. Consider:
+- Bar: categorical comparison (sales by category, top products)
+- Line: trends over time (monthly revenue, daily orders)
+- Pie: distribution/composition (market share, category breakdown)
+- Scatter: correlation between two numeric values
+- Box: distribution analysis of a numeric variable
+
+Respond ONLY in this exact JSON format (no markdown, no extra text):
+{{"chart_type": "bar|line|pie|scatter|box", "x_col": "column_name", "y_col": "column_name", "title": "Chart Title"}}
+
+For pie charts, x_col is labels and y_col is values.
+For box plots, only y_col is needed (set x_col to same as y_col)."""
+        
+        try:
+            self.rate_limiter.wait_if_needed()
+            
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=100,
+                )
+            )
+            
+            if not response or not hasattr(response, 'text'):
+                return None
+            
+            # Parse JSON response
+            import json
+            import re
+            
+            text = response.text.strip()
+            # Remove markdown code blocks if present
+            text = re.sub(r'```json\s*|\s*```', '', text)
+            
+            suggestion = json.loads(text)
+            
+            # Validate suggestion
+            required_keys = ['chart_type', 'x_col', 'y_col', 'title']
+            if all(k in suggestion for k in required_keys):
+                # Ensure columns exist in dataframe
+                if suggestion['x_col'] in df.columns and suggestion['y_col'] in df.columns:
+                    return suggestion
+            
+            return None
+            
+        except Exception:
+            return None
 
 
 class OutputNode:

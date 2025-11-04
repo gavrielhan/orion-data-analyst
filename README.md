@@ -4,6 +4,12 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+[![LangGraph](https://img.shields.io/badge/🦜_LangGraph-0.2+-green.svg)](https://langchain-ai.github.io/langgraph/)
+[![LangChain](https://img.shields.io/badge/🦜_LangChain-0.3+-green.svg)](https://www.langchain.com/)
+[![Google Cloud](https://img.shields.io/badge/Google_Cloud-BigQuery-4285F4?logo=google-cloud)](https://cloud.google.com/bigquery)
+[![Gemini AI](https://img.shields.io/badge/Gemini_AI-2.0_Flash-8E75B2?logo=google)](https://ai.google.dev/)
+[![Powered by AI](https://img.shields.io/badge/Powered_by-AI-orange.svg)](https://github.com/gavrielhan/orion-data-analyst)
+
 An intelligent data analysis agent that transforms natural language questions into SQL queries, executes them on BigQuery, performs statistical analysis, and generates actionable business insights.
 
 🔗 **GitHub**: https://github.com/gavrielhan/orion-data-analyst  
@@ -128,7 +134,7 @@ Orion uses a **modular node-based architecture** powered by LangGraph:
 └──────┬──────┘
        │
        ▼
-┌─────────────────┐     Fast-path for      ┌────────────┐
+┌─────────────────┐     Fast-path for       ┌────────────┐
 │   InputNode     │────common questions────▶│ OutputNode │
 └──────┬──────────┘                         └────────────┘
        │
@@ -256,7 +262,6 @@ orion-data-analyst/
 │       ├── rate_limiter.py       # API rate limiting
 │       ├── schema_fetcher.py     # BigQuery schema utilities
 │       └── visualizer.py         # Chart generation (matplotlib/seaborn)
-├── tests/                        # Test suite
 ├── .env.example                  # Configuration template
 ├── requirements.txt              # Dependencies
 ├── setup.py                      # PyPI packaging
@@ -307,18 +312,6 @@ cd orion-data-analyst
 pip install -e .
 orion
 ```
-
-### Run Tests
-```bash
-pytest tests/
-```
-
-### Build for PyPI
-```bash
-python -m build
-python -m twine upload dist/*
-```
-
 ---
 
 ## 📝 Commands

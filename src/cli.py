@@ -111,18 +111,24 @@ def load_session(session_path: str) -> list:
         return []
 
 
-def handle_export_options(df, visualizer, user_query_lower):
+def handle_export_options(df, visualizer, user_query_lower, result=None):
     """
-    Handle export options sequentially.
+    Handle export options sequentially, using LLM-suggested visualization if available.
     Returns True if exports were requested in the original query.
     """
     if df is None or len(df) == 0:
         return False
     
+    # Get LLM visualization suggestion (from InsightGeneratorNode)
+    viz_suggestion = result.get("visualization_suggestion") if result else None
+    
     # Check if user already specified exports in their query
     wants_csv = any(kw in user_query_lower for kw in ["save csv", "export csv", "as csv", "to csv"])
     wants_chart = "chart" in user_query_lower
     chart_type = None
+    x_col = None
+    y_col = None
+    title = None
     
     # Extract chart type if specified
     if wants_chart:
@@ -130,8 +136,14 @@ def handle_export_options(df, visualizer, user_query_lower):
             if ctype in user_query_lower:
                 chart_type = ctype
                 break
-        if not chart_type:
-            chart_type = "bar"  # Default
+        if not chart_type and viz_suggestion:
+            # Use LLM suggestion
+            chart_type = viz_suggestion.get("chart_type", "bar")
+            x_col = viz_suggestion.get("x_col")
+            y_col = viz_suggestion.get("y_col")
+            title = viz_suggestion.get("title")
+        elif not chart_type:
+            chart_type = "bar"  # Fallback default
     
     # If already specified, handle immediately
     if wants_csv or wants_chart:
@@ -141,8 +153,10 @@ def handle_export_options(df, visualizer, user_query_lower):
             print(f"✅ CSV saved to: {filepath}")
         
         if wants_chart:
+            if viz_suggestion:
+                print(OutputFormatter.info(f"💡 Gemini suggests: {chart_type} chart with {x_col or 'auto'} (x) vs {y_col or 'auto'} (y)"))
             print(f"\n📊 Creating {chart_type} chart...")
-            filepath = visualizer.create_chart(df, chart_type)
+            filepath = visualizer.create_chart(df, chart_type, x_col, y_col, title)
             if filepath:
                 print(f"✅ Chart saved to: {filepath}")
             else:
@@ -159,10 +173,19 @@ def handle_export_options(df, visualizer, user_query_lower):
         filepath = visualizer.save_csv(df)
         print(f"✅ CSV saved to: {filepath}")
     
-    # Ask about chart second
-    chart_response = input("\n📊 Would you like to create a chart? (type 'chart [type]' or 'no')\n    Types: bar, line, pie, scatter, box, candle\n    → ").strip().lower()
+    # Ask about chart second - with LLM suggestion if available
+    if viz_suggestion:
+        suggested_type = viz_suggestion.get("chart_type", "bar")
+        suggested_x = viz_suggestion.get("x_col", "")
+        suggested_y = viz_suggestion.get("y_col", "")
+        chart_prompt = f"\n📊 Gemini suggests: {suggested_type} chart ({suggested_x} vs {suggested_y})\n    Create this chart? (yes/no or specify 'chart [type]')\n    → "
+    else:
+        chart_prompt = "\n📊 Would you like to create a chart? (type 'chart [type]' or 'no')\n    Types: bar, line, pie, scatter, box, candle\n    → "
+    
+    chart_response = input(chart_prompt).strip().lower()
     
     if chart_response.startswith("chart "):
+        # User specified a type manually
         chart_type = chart_response.replace("chart ", "").strip()
         print(f"\n📊 Creating {chart_type} chart...")
         filepath = visualizer.create_chart(df, chart_type)
@@ -170,7 +193,25 @@ def handle_export_options(df, visualizer, user_query_lower):
             print(f"✅ Chart saved to: {filepath}")
         else:
             print("❌ Failed to create chart.")
-    elif chart_response in ["yes", "y"] or any(ct in chart_response for ct in ["bar", "line", "pie", "scatter", "box", "candle"]):
+    elif chart_response in ["yes", "y"]:
+        # Use LLM suggestion if available, otherwise default
+        if viz_suggestion:
+            chart_type = viz_suggestion.get("chart_type", "bar")
+            x_col = viz_suggestion.get("x_col")
+            y_col = viz_suggestion.get("y_col")
+            title = viz_suggestion.get("title")
+            print(f"\n📊 Creating {chart_type} chart with Gemini's suggestions...")
+            filepath = visualizer.create_chart(df, chart_type, x_col, y_col, title)
+        else:
+            chart_type = "bar"
+            print(f"\n📊 Creating {chart_type} chart...")
+            filepath = visualizer.create_chart(df, chart_type)
+        
+        if filepath:
+            print(f"✅ Chart saved to: {filepath}")
+        else:
+            print("❌ Failed to create chart.")
+    elif any(ct in chart_response for ct in ["bar", "line", "pie", "scatter", "box", "candle"]):
         # Try to extract chart type from response
         chart_type = "bar"  # Default
         for ctype in ["bar", "line", "pie", "scatter", "box", "candle"]:
@@ -290,7 +331,7 @@ def main():
             
             # Handle export options if there's data
             if df is not None and len(df) > 0:
-                handle_export_options(df, visualizer, user_query.lower())
+                handle_export_options(df, visualizer, user_query.lower(), result)
             
         except KeyboardInterrupt:
             print("\n\n👋 Goodbye!")
