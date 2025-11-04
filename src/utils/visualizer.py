@@ -162,24 +162,36 @@ class Visualizer:
     
     def create_chart(self, df: pd.DataFrame, chart_type: str, 
                     x_col: Optional[str] = None, y_col: Optional[str] = None,
-                    title: Optional[str] = None) -> Optional[str]:
+                    title: Optional[str] = None, hue_col: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         """
         Create and save a chart based on type and data.
-        Returns path to saved file or None if creation fails.
+        Returns (filepath, error_message) tuple. If error, filepath is None and error_message explains why.
         """
         try:
             plt.figure(figsize=(10, 6))
             
             chart_type = chart_type.lower()
             
+            # Validate columns exist
+            if x_col and x_col not in df.columns:
+                return None, f"Column '{x_col}' not found in data. Available columns: {', '.join(df.columns)}"
+            if y_col and y_col not in df.columns:
+                return None, f"Column '{y_col}' not found in data. Available columns: {', '.join(df.columns)}"
+            if hue_col and hue_col not in df.columns:
+                return None, f"Column '{hue_col}' not found in data. Available columns: {', '.join(df.columns)}"
+            
             # Intelligently auto-detect columns if not specified
             if x_col is None or y_col is None:
                 x_col, y_col = self._smart_column_selection(df, chart_type)
             
+            # Validate selected columns
+            if x_col not in df.columns or y_col not in df.columns:
+                return None, f"Auto-selected columns invalid. X: {x_col}, Y: {y_col}. Available: {', '.join(df.columns)}"
+            
             if chart_type == "bar":
-                self._create_bar_chart(df, x_col, y_col, title)
+                self._create_bar_chart(df, x_col, y_col, title, hue_col)
             elif chart_type == "line":
-                self._create_line_chart(df, x_col, y_col, title)
+                self._create_line_chart(df, x_col, y_col, title, hue_col)
             elif chart_type == "pie":
                 self._create_pie_chart(df, x_col, y_col, title)
             elif chart_type == "scatter":
@@ -190,7 +202,7 @@ class Visualizer:
                 self._create_candle_plot(df, title)
             else:
                 # Default to bar chart
-                self._create_bar_chart(df, x_col, y_col, title)
+                self._create_bar_chart(df, x_col, y_col, title, hue_col)
             
             # Save and close
             filepath = self._generate_filename(chart_type)
@@ -198,25 +210,42 @@ class Visualizer:
             plt.savefig(filepath, dpi=300, bbox_inches='tight')
             plt.close()
             
-            return str(filepath)
+            return str(filepath), None
             
+        except KeyError as e:
+            plt.close()
+            return None, f"Column error: {str(e)}. Available columns: {', '.join(df.columns)}"
+        except ValueError as e:
+            plt.close()
+            return None, f"Data value error: {str(e)}. Check data types and values."
         except Exception as e:
             plt.close()
-            return None
+            return None, f"Chart creation failed: {str(e)}"
     
-    def _create_bar_chart(self, df: pd.DataFrame, x_col: str, y_col: str, title: str):
-        """Create bar chart."""
+    def _create_bar_chart(self, df: pd.DataFrame, x_col: str, y_col: str, title: str, hue_col: Optional[str] = None):
+        """Create bar chart with optional grouping."""
         # Limit to top 15 items for readability
         plot_df = df.head(15) if len(df) > 15 else df
-        sns.barplot(data=plot_df, x=x_col, y=y_col, hue=y_col, palette="viridis", legend=False)
+        if hue_col and hue_col in df.columns:
+            sns.barplot(data=plot_df, x=x_col, y=y_col, hue=hue_col, palette="viridis")
+            plt.legend(title=hue_col, bbox_to_anchor=(1.05, 1), loc='upper left')
+        else:
+            # Use hue=x_col with legend=False to maintain colorful bars without warning
+            sns.barplot(data=plot_df, x=x_col, y=y_col, hue=x_col, palette="viridis", legend=False)
         plt.xticks(rotation=45, ha='right')
         plt.title(title or f"{y_col} by {x_col}")
         plt.xlabel(x_col)
         plt.ylabel(y_col)
     
-    def _create_line_chart(self, df: pd.DataFrame, x_col: str, y_col: str, title: str):
-        """Create line chart for trends."""
-        plt.plot(df[x_col], df[y_col], marker='o', linewidth=2, markersize=6)
+    def _create_line_chart(self, df: pd.DataFrame, x_col: str, y_col: str, title: str, hue_col: Optional[str] = None):
+        """Create line chart with optional grouping."""
+        if hue_col and hue_col in df.columns:
+            for group in df[hue_col].unique():
+                group_df = df[df[hue_col] == group]
+                plt.plot(group_df[x_col], group_df[y_col], marker='o', linewidth=2, markersize=6, label=group)
+            plt.legend(title=hue_col, bbox_to_anchor=(1.05, 1), loc='upper left')
+        else:
+            plt.plot(df[x_col], df[y_col], marker='o', linewidth=2, markersize=6)
         plt.xticks(rotation=45, ha='right')
         plt.title(title or f"{y_col} Trend")
         plt.xlabel(x_col)

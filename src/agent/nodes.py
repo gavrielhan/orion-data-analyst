@@ -782,6 +782,7 @@ Your response (MUST start with META: or SQL:):
             
             return {
                 "sql_query": sql_query,
+                "discovery_result": None,  # Clear discovery result after using it
                 "query_error": None  # Clear any previous errors
             }
         except Exception as e:
@@ -1310,8 +1311,13 @@ Possible reasons: filters too restrictive, no data for time period, typos, etc."
         if df is not None and len(df) <= 10:
             data_summary += f"\n\nData preview:\n{df.to_string(index=False)}"
         
-        # Generate visualization suggestion
-        viz_suggestion = self._suggest_visualization(user_query, df, analysis_type)
+        # Generate visualization suggestion (skip if it might cause issues)
+        viz_suggestion = None
+        try:
+            viz_suggestion = self._suggest_visualization(user_query, df, analysis_type)
+        except Exception:
+            # Silently skip visualization suggestion if it fails
+            pass
         
         prompt = f"""You are a business analyst. Generate actionable insights from this data analysis.
 
@@ -1368,7 +1374,7 @@ Keep it concise and business-focused. Use bullet points."""
         
         columns_str = "\n".join(columns_info)
         
-        prompt = f"""Based on the user's query and data, suggest the best visualization.
+        prompt = f"""Analyze the user's query and data to suggest the optimal visualization.
 
 User query: {user_query}
 Analysis type: {analysis_type}
@@ -1376,18 +1382,39 @@ Analysis type: {analysis_type}
 Available columns:
 {columns_str}
 
-Suggest the BEST chart type and axis configuration. Consider:
-- Bar: categorical comparison (sales by category, top products)
-- Line: trends over time (monthly revenue, daily orders)
-- Pie: distribution/composition (market share, category breakdown)
+CRITICAL: Parse the user's explicit chart specifications from their query:
+- "year on x-axis" / "x-axis should be year" → x_col: order_year (or year column)
+- "count on y-axis" / "y-axis should be count" → y_col: count
+- "grouped by gender" / "one bar for females and one for males" → hue_col: gender
+- "each year contains 2 bars" → use hue_col for grouping
+
+Chart type guidelines:
+- Bar: categorical comparison (sales by category, top products, counts by group)
+- Line: trends over time (monthly revenue, daily orders, time series)
+- Pie: distribution/composition (market share, category breakdown, single dimension)
 - Scatter: correlation between two numeric values
 - Box: distribution analysis of a numeric variable
 
-Respond ONLY in this exact JSON format (no markdown, no extra text):
-{{"chart_type": "bar|line|pie|scatter|box", "x_col": "column_name", "y_col": "column_name", "title": "Chart Title"}}
+Grouping (hue_col):
+- Use hue_col when query mentions multiple categories/groups
+- Keywords: "by gender", "by region", "by category", "male and female", "each X contains N bars"
+- Example: "sales by region and product" → x_col: region, y_col: sales, hue_col: product
+- Example: "female and male counts per year" → x_col: order_year, y_col: count, hue_col: gender
+- Example: "each year contains 2 bars" → hue_col: (grouping column like gender/status)
 
-For pie charts, x_col is labels and y_col is values.
-For box plots, only y_col is needed (set x_col to same as y_col)."""
+Axis selection priority:
+1. ALWAYS follow explicit user specifications (e.g., "year on x-axis")
+2. For time-based queries: x_col = time/date column, y_col = metric
+3. For grouped bars: x_col = category, y_col = value, hue_col = grouping
+
+Respond ONLY in this exact JSON format (no markdown, no extra text):
+{{"chart_type": "bar|line|pie|scatter|box", "x_col": "column_name", "y_col": "column_name", "hue_col": "column_name_or_null", "title": "Chart Title"}}
+
+Rules:
+- For pie charts: x_col is labels, y_col is values, hue_col is null
+- For box plots: x_col and y_col are the same numeric column, hue_col is null
+- For grouped charts: set hue_col to the grouping column (e.g., gender, category, region)
+- Always provide a descriptive title based on the query"""
         
         try:
             self.rate_limiter.wait_if_needed()
@@ -1396,7 +1423,7 @@ For box plots, only y_col is needed (set x_col to same as y_col)."""
                 prompt,
                 generation_config=genai.GenerationConfig(
                     temperature=0.1,
-                    max_output_tokens=100,
+                    max_output_tokens=200,  # Increased for processing explicit user specifications
                 )
             )
             
@@ -1418,6 +1445,12 @@ For box plots, only y_col is needed (set x_col to same as y_col)."""
             if all(k in suggestion for k in required_keys):
                 # Ensure columns exist in dataframe
                 if suggestion['x_col'] in df.columns and suggestion['y_col'] in df.columns:
+                    # Validate hue_col if provided (can be null)
+                    if 'hue_col' in suggestion and suggestion['hue_col']:
+                        if suggestion['hue_col'] not in df.columns:
+                            suggestion['hue_col'] = None  # Invalid hue_col, ignore it
+                    else:
+                        suggestion['hue_col'] = None
                     return suggestion
             
             return None

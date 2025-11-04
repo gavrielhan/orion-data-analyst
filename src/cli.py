@@ -153,14 +153,18 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
             print(f"✅ CSV saved to: {filepath}")
         
         if wants_chart:
+            hue_col = viz_suggestion.get("hue_col") if viz_suggestion else None
             if viz_suggestion:
-                print(OutputFormatter.info(f"💡 Gemini suggests: {chart_type} chart with {x_col or 'auto'} (x) vs {y_col or 'auto'} (y)"))
+                suggestion_text = f"{chart_type} chart with {x_col or 'auto'} (x) vs {y_col or 'auto'} (y)"
+                if hue_col:
+                    suggestion_text += f", grouped by {hue_col}"
+                print(OutputFormatter.info(f"💡 Gemini suggests: {suggestion_text}"))
             print(f"\n📊 Creating {chart_type} chart...")
-            filepath = visualizer.create_chart(df, chart_type, x_col, y_col, title)
+            filepath, error_msg = visualizer.create_chart(df, chart_type, x_col, y_col, title, hue_col)
             if filepath:
                 print(f"✅ Chart saved to: {filepath}")
             else:
-                print("❌ Failed to create chart.")
+                print(OutputFormatter.error(f"❌ Chart creation failed: {error_msg or 'Unknown error'}"))
         
         return True
     
@@ -178,7 +182,12 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
         suggested_type = viz_suggestion.get("chart_type", "bar")
         suggested_x = viz_suggestion.get("x_col", "")
         suggested_y = viz_suggestion.get("y_col", "")
-        chart_prompt = f"\n📊 Gemini suggests: {suggested_type} chart ({suggested_x} vs {suggested_y})\n    Create this chart? (yes/no or specify 'chart [type]')\n    → "
+        suggested_hue = viz_suggestion.get("hue_col")
+        suggestion_text = f"{suggested_type} chart ({suggested_x} vs {suggested_y}"
+        if suggested_hue:
+            suggestion_text += f", grouped by {suggested_hue}"
+        suggestion_text += ")"
+        chart_prompt = f"\n📊 Gemini suggests: {suggestion_text}\n    Create this chart? (yes/no or specify 'chart [type]')\n    → "
     else:
         chart_prompt = "\n📊 Would you like to create a chart? (type 'chart [type]' or 'no')\n    Types: bar, line, pie, scatter, box, candle\n    → "
     
@@ -188,11 +197,11 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
         # User specified a type manually
         chart_type = chart_response.replace("chart ", "").strip()
         print(f"\n📊 Creating {chart_type} chart...")
-        filepath = visualizer.create_chart(df, chart_type)
+        filepath, error_msg = visualizer.create_chart(df, chart_type)
         if filepath:
             print(f"✅ Chart saved to: {filepath}")
         else:
-            print("❌ Failed to create chart.")
+            print(OutputFormatter.error(f"❌ Chart creation failed: {error_msg or 'Unknown error'}"))
     elif chart_response in ["yes", "y"]:
         # Use LLM suggestion if available, otherwise default
         if viz_suggestion:
@@ -200,17 +209,18 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
             x_col = viz_suggestion.get("x_col")
             y_col = viz_suggestion.get("y_col")
             title = viz_suggestion.get("title")
+            hue_col = viz_suggestion.get("hue_col")
             print(f"\n📊 Creating {chart_type} chart with Gemini's suggestions...")
-            filepath = visualizer.create_chart(df, chart_type, x_col, y_col, title)
+            filepath, error_msg = visualizer.create_chart(df, chart_type, x_col, y_col, title, hue_col)
         else:
             chart_type = "bar"
             print(f"\n📊 Creating {chart_type} chart...")
-            filepath = visualizer.create_chart(df, chart_type)
+            filepath, error_msg = visualizer.create_chart(df, chart_type)
         
         if filepath:
             print(f"✅ Chart saved to: {filepath}")
         else:
-            print("❌ Failed to create chart.")
+            print(OutputFormatter.error(f"❌ Chart creation failed: {error_msg or 'Unknown error'}"))
     elif any(ct in chart_response for ct in ["bar", "line", "pie", "scatter", "box", "candle"]):
         # Try to extract chart type from response
         chart_type = "bar"  # Default
@@ -220,13 +230,70 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
                 break
         
         print(f"\n📊 Creating {chart_type} chart...")
-        filepath = visualizer.create_chart(df, chart_type)
+        filepath, error_msg = visualizer.create_chart(df, chart_type)
         if filepath:
             print(f"✅ Chart saved to: {filepath}")
         else:
-            print("❌ Failed to create chart.")
+            print(OutputFormatter.error(f"❌ Chart creation failed: {error_msg or 'Unknown error'}"))
     
     return False
+
+
+def _is_chart_customization_query(current_query: str, previous_query: str) -> bool:
+    """
+    Use Gemini to determine if current query is asking to re-visualize previous data.
+    Returns True if it's a chart customization, False if it's a new data query.
+    """
+    try:
+        import google.generativeai as genai
+        from src.config import config
+        
+        genai.configure(api_key=config.gemini_api_key)
+        model = genai.GenerativeModel(config.gemini_model)
+        
+        prompt = f"""Analyze if the current query is asking to visualize the SAME data from the previous query in a different way.
+
+Previous query: {previous_query}
+Current query: {current_query}
+
+Is the current query:
+A) Requesting a NEW data query (different data, filters, time periods, metrics)
+B) Requesting to RE-VISUALIZE the same data with different chart layout/specifications
+
+Examples of B (chart customization):
+- Previous: "show female and male counts per year"
+  Current: "make bar chart with year on x-axis" → B (same data, different layout)
+- Previous: "sales by product"
+  Current: "show it as a pie chart" → B (same data, different chart type)
+- Previous: "top customers"
+  Current: "group by region" → B (same data, add grouping)
+
+Examples of A (new data query):
+- Previous: "show sales for 2023"
+  Current: "show sales for 2024" → A (different time period)
+- Previous: "female and male counts"
+  Current: "show orders by status" → A (completely different data)
+- Previous: "top products"
+  Current: "bottom products" → A (different metric/filter)
+
+Respond with ONLY one letter: A or B"""
+
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=10,
+            )
+        )
+        
+        if response and hasattr(response, 'text'):
+            answer = response.text.strip().upper()
+            return 'B' in answer
+        
+        return False
+    except Exception:
+        # If LLM fails, assume it's a new query (safer default)
+        return False
 
 
 def main():
@@ -248,6 +315,7 @@ def main():
     visualizer = Visualizer()
     cache = QueryCache()
     conversation_history = []
+    last_result = None  # Store last result for chart re-generation
     
     while True:
         try:
@@ -286,37 +354,64 @@ def main():
                 print(OutputFormatter.success("Cache cleared"))
                 continue
             
-            # Check cache first
-            cached_result = cache.get(user_query)
-            if cached_result:
-                print(OutputFormatter.info("Using cached result (instant) ⚡"))
-                result = cached_result
-            else:
-                # Execute agent with conversation context and show progress
-                print(OutputFormatter.format("\n🤖 **Orion working...**"))
-                result = agent.invoke(user_query, conversation_history, verbose=True)
-
-                # Handle approval if needed
-                requires_approval = result.get("requires_approval", False)
-                approval_reason = result.get("approval_reason")
-                
-                if requires_approval and approval_reason:
-                    print(OutputFormatter.warning(f"Approval Required: {approval_reason}"))
-                    approval = input("Proceed? (yes/no): ").strip().lower()
-                    
-                    if approval not in ["yes", "y"]:
-                        print(OutputFormatter.error("Query cancelled"))
-                        continue
-                    
-                    print(OutputFormatter.format("\n🤖 **Executing approved query...**"))
-                
-                # Cache successful results
-                if not result.get("query_error"):
-                    cache.set(user_query, result)
+            # Use LLM to detect if this is a chart customization request for previous data
+            is_chart_query = False
+            if last_result is not None and last_result.get("query_result") is not None:
+                is_chart_query = _is_chart_customization_query(user_query, last_result.get("user_query", ""))
             
-            # Display output with beautiful formatting
-            output = result.get("final_output", "No output generated")
-            print(OutputFormatter.format(output))
+            if is_chart_query:
+                # Regenerate visualization suggestion with new specifications
+                print(OutputFormatter.info("🎨 Creating custom chart from previous data..."))
+                df = last_result.get("query_result")
+                analysis_type = last_result.get("analysis_type", "aggregation")
+                
+                # Import InsightGeneratorNode to regenerate visualization
+                from src.agent.nodes import InsightGeneratorNode
+                insight_gen = InsightGeneratorNode()
+                viz_suggestion = insight_gen._suggest_visualization(user_query, df, analysis_type)
+                
+                # Use the same result but with new visualization suggestion
+                result = last_result.copy()
+                result["visualization_suggestion"] = viz_suggestion
+                print(OutputFormatter.success("✓ Chart specification updated"))
+            else:
+                # Check cache first
+                cached_result = cache.get(user_query)
+                if cached_result:
+                    print(OutputFormatter.info("Using cached result (instant) ⚡"))
+                    result = cached_result
+                else:
+                    # Execute agent with conversation context and show progress
+                    print(OutputFormatter.format("\n🤖 **Orion working...**"))
+                    result = agent.invoke(user_query, conversation_history, verbose=True)
+
+                    # Handle approval if needed
+                    requires_approval = result.get("requires_approval", False)
+                    approval_reason = result.get("approval_reason")
+                    
+                    if requires_approval and approval_reason:
+                        print(OutputFormatter.warning(f"Approval Required: {approval_reason}"))
+                        approval = input("Proceed? (yes/no): ").strip().lower()
+                        
+                        if approval not in ["yes", "y"]:
+                            print(OutputFormatter.error("Query cancelled"))
+                            continue
+                        
+                        print(OutputFormatter.format("\n🤖 **Executing approved query...**"))
+                    
+                    # Cache successful results
+                    if not result.get("query_error"):
+                        cache.set(user_query, result)
+            
+            # Display output with beautiful formatting (skip for chart-only queries)
+            if not is_chart_query:
+                output = result.get("final_output", "No output generated")
+                print(OutputFormatter.format(output))
+            
+            # Store last result for potential chart re-generation (with original query)
+            if result.get("query_result") is not None:
+                last_result = result.copy()
+                last_result["user_query"] = user_query
             
             # Update conversation history (limit to last 5)
             df = result.get("query_result")
@@ -329,9 +424,28 @@ def main():
             if len(conversation_history) > 5:
                 conversation_history = conversation_history[-5:]
             
-            # Handle export options if there's data
+            # Handle export options if there's data (for chart-only queries, go directly to chart)
             if df is not None and len(df) > 0:
-                handle_export_options(df, visualizer, user_query.lower(), result)
+                if is_chart_query:
+                    # For chart-only queries, directly create the chart
+                    viz_suggestion = result.get("visualization_suggestion")
+                    if viz_suggestion:
+                        chart_type = viz_suggestion.get("chart_type", "bar")
+                        x_col = viz_suggestion.get("x_col")
+                        y_col = viz_suggestion.get("y_col")
+                        title = viz_suggestion.get("title")
+                        hue_col = viz_suggestion.get("hue_col")
+                        
+                        print(f"\n📊 Creating {chart_type} chart with your specifications...")
+                        filepath, error_msg = visualizer.create_chart(df, chart_type, x_col, y_col, title, hue_col)
+                        if filepath:
+                            print(f"✅ Chart saved to: {filepath}")
+                        else:
+                            print(OutputFormatter.error(f"❌ Chart creation failed: {error_msg or 'Unknown error'}"))
+                    else:
+                        print(OutputFormatter.error("❌ Could not generate chart specification from your request"))
+                else:
+                    handle_export_options(df, visualizer, user_query.lower(), result)
             
         except KeyboardInterrupt:
             print("\n\n👋 Goodbye!")
