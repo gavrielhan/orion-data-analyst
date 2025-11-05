@@ -117,7 +117,11 @@ def _generate_viz_suggestion_lazy(user_query, df, analysis_type="aggregation"):
         from src.agent.nodes import InsightGeneratorNode
         insight_gen = InsightGeneratorNode()
         return insight_gen._suggest_visualization(user_query, df, analysis_type)
-    except Exception:
+    except Exception as e:
+        # Log error but don't fail the entire flow - visualization suggestion is optional
+        # Only log if verbose mode is enabled (check if we can determine this)
+        import logging
+        logging.getLogger(__name__).debug(f"Failed to generate visualization suggestion: {str(e)}")
         return None
 
 

@@ -19,12 +19,23 @@ from src.agent.state import AgentState
 class ContextNode:
     """
     Manages schema and conversation context.
-    Loads previous queries/results for follow-up handling.
+    Provides canonical schema source cached once and shared across nodes.
     """
     
-    CACHE_DURATION_SEC = 3600  # 1 hour cache
-    SCHEMA_FILE = Path(__file__).parent.parent.parent / "schemas.json"
+    SCHEMA_CACHE_FILE = Path(__file__).parent.parent.parent / "schema_context.txt"
+    CACHE_DURATION_SEC = 3600
     MAX_HISTORY = 5  # Keep last 5 interactions for context
+    
+    @classmethod
+    def get_schema_context(cls) -> str:
+        """Get schema context from canonical source file."""
+        try:
+            if cls.SCHEMA_CACHE_FILE.exists():
+                return cls.SCHEMA_CACHE_FILE.read_text()
+            return "Schema unavailable. You can query orders, order_items, products, and users only."
+        except Exception as e:
+            # If schema file can't be read, return fallback message
+            return f"Schema file error: {str(e)}. You can query orders, order_items, products, and users only."
     
     @classmethod
     def execute(cls, state: AgentState) -> Dict[str, Any]:
@@ -40,10 +51,8 @@ class ContextNode:
         cache_timestamp = state.get("schema_cache_timestamp", 0)
         current_time = time.time()
         
-        # Load schema if needed
-        schema_context = state.get("schema_context")
-        if not schema_context or (current_time - cache_timestamp) >= cls.CACHE_DURATION_SEC:
-            schema_context = cls._load_schema()
+        # Load schema from canonical source
+        schema_context = cls.get_schema_context()
         
         # Maintain conversation history (limit to last N)
         history = state.get("conversation_history", []) or []
@@ -55,73 +64,6 @@ class ContextNode:
             "schema_cache_timestamp": current_time,
             "conversation_history": history
         }
-    
-    @classmethod
-    def _load_schema(cls) -> str:
-        """Load schema from file or fetch from BigQuery if file is missing/stale."""
-        if cls.SCHEMA_FILE.exists():
-            # Check file modification time
-            file_mod_time = cls.SCHEMA_FILE.stat().st_mtime
-            if (time.time() - file_mod_time) < cls.CACHE_DURATION_SEC:
-                # File is fresh, use it
-                with open(cls.SCHEMA_FILE, 'r') as f:
-                    schemas = json.load(f)
-                return cls._format_schema(schemas)
-        
-        # File doesn't exist or is stale - fetch from BigQuery
-        try:
-            schemas = cls._fetch_from_bigquery()
-            # Save to file for future use
-            with open(cls.SCHEMA_FILE, 'w') as f:
-                json.dump(schemas, f, indent=2)
-            return cls._format_schema(schemas)
-        except Exception as e:
-            # Fallback to file if fetch fails
-            if cls.SCHEMA_FILE.exists():
-                with open(cls.SCHEMA_FILE, 'r') as f:
-                    schemas = json.load(f)
-                return cls._format_schema(schemas)
-            raise Exception(f"Failed to load schema: {e}")
-    
-    @classmethod
-    def _fetch_from_bigquery(cls) -> dict:
-        """Fetch schema directly from BigQuery."""
-        client = bigquery.Client(project=config.google_cloud_project)
-        dataset_ref = client.dataset("thelook_ecommerce", project="bigquery-public-data")
-        
-        schemas = {}
-        for table in client.list_tables(dataset_ref):
-            if table.table_id in ["orders", "order_items", "products", "users"]:
-                table_ref = dataset_ref.table(table.table_id)
-                table_obj = client.get_table(table_ref)
-                
-                schemas[table.table_id] = {
-                    "description": table_obj.description or "",
-                    "columns": [
-                        {
-                            "name": field.name,
-                            "field_type": field.field_type,
-                            "mode": field.mode,
-                            "description": field.description or ""
-                        }
-                        for field in table_obj.schema
-                    ]
-                }
-        
-        return schemas
-    
-    @classmethod
-    def _format_schema(cls, schemas: dict) -> str:
-        """Format schema for LLM context."""
-        parts = ["Available tables in bigquery-public-data.thelook_ecommerce:\n"]
-        
-        for table_name, schema in schemas.items():
-            parts.append(f"\n{table_name}:")
-            for col in schema["columns"]:
-                parts.append(f"  - {col['name']} ({col['field_type']})")
-        
-        parts.append("\nJOINs: orders.user_id=users.id, orders.order_id=order_items.order_id, order_items.product_id=products.id")
-        return "\n".join(parts)
 
 class ApprovalNode:
     """
@@ -294,39 +236,51 @@ class InputNode:
 class QueryBuilderNode:
     """Generate SQL or meta answers with Gemini while minimising token-heavy prompts."""
 
-    MAIN_PROMPT = dedent(
-        """
-        You are Orion, an analyst for the dataset `bigquery-public-data.thelook_ecommerce`.
-        Use only these tables: orders, order_items, products, users.
-        Always reference tables exactly as `bigquery-public-data.thelook_ecommerce.<table>` and include LIMIT 100 unless the user provides another limit.
-        Respond with either:
-          • `META: <concise answer>` for questions about the assistant or available data.
-          • `SQL: <query>` for runnable Standard SQL.
-        Never add prose before the prefix.
-        {schema}
+    MAIN_PROMPT = dedent("""
+You are **Orion**, an expert analyst for `bigquery-public-data.thelook_ecommerce`
+(tables: orders, order_items, products, users).
 
-        User request: {user_query}
-        {history}
-        {discovery}
-        {retry_hint}
-        """
-    )
+Goal → Return **one line**:
+- `META:` if the user asks about your abilities or available data.
+- `SQL:` if they request actual data.
+- `DISCOVER:` only if you truly need to inspect distinct column values first.
 
-    RETRY_PROMPT = dedent(
-        """
-        The previous SQL failed on BigQuery. Study the error log and return a corrected query.
-        {schema}
+Rules:
+- Use only the four tables above with full path and backticks:
+  `bigquery-public-data.thelook_ecommerce.<table>`
+- Always add LIMIT 100 unless user specifies otherwise.
+- Prefix columns with aliases (o, oi, p, u) to avoid ambiguity.
+- Don’t explain; output must begin with exactly `META:`, `SQL:` or `DISCOVER:`.
 
-        Original request: {user_query}
-        Previous SQL:
-        {previous_sql}
+Joins:
+  orders.user_id = users.id  
+  orders.order_id = order_items.order_id  
+  order_items.product_id = products.id
 
-        Error history:
-        {error_log}
+User query: {user_query}
+{history}
+{discovery}
+{retry_hint}
+""")
 
-        Return only `SQL: <query>` with fixes applied.
-        """
-    )
+
+    RETRY_PROMPT = dedent("""
+Previous SQL failed on BigQuery. Fix it.
+
+{schema}
+User query: {user_query}
+Previous SQL: {previous_sql}
+Error: {error_log}
+
+Return only:
+SQL: <corrected query>
+
+Rules:
+- Keep full table paths with backticks.
+- Add LIMIT 100 if missing.
+- Alias columns to resolve ambiguity.
+""")
+
 
     RATE_LIMIT_BACKOFF = (15, 45)
 
@@ -336,112 +290,7 @@ class QueryBuilderNode:
         from src.utils.rate_limiter import get_global_rate_limiter
 
         self.rate_limiter = get_global_rate_limiter()
-        self._schema_context = self._load_schema_context()
         self._cache: Dict[str, str] = {}
-
-    def _load_schema_context(self) -> str:
-        schema_file = Path(__file__).parent.parent.parent / 'schema_context.txt'
-        if schema_file.exists():
-            try:
-                return schema_file.read_text()
-            except Exception:
-                pass
-
-        schema_json = Path(__file__).parent.parent.parent / 'schemas.json'
-        if schema_json.exists():
-            try:
-                with open(schema_json, 'r') as f:
-                    schemas = json.load(f)
-                return self._format_schema_from_json(schemas)
-            except Exception as e:
-                print(f"Warning: Could not load schema JSON: {e}")
-        
-        # Final fallback to hardcoded schema
-        return self._get_hardcoded_schema()
-    
-    def _format_schema_from_json(self, schemas: dict) -> str:
-        """Format schema information from JSON for LLM context."""
-        context_parts = [
-            "CRITICAL: You can ONLY query these 4 tables in bigquery-public-data.thelook_ecommerce:\n"
-        ]
-        
-        table_descriptions = {
-            "orders": "customer orders with timestamps, status, and number of items",
-            "order_items": "products within each order, including price and cost",
-            "products": "catalog metadata like category, brand, and pricing",
-            "users": "customer demographics like age, gender, and location"
-        }
-        
-        for i, (table_name, schema) in enumerate(schemas.items(), 1):
-            desc = table_descriptions.get(table_name, schema.get("description", ""))
-            context_parts.append(f"{i}. {table_name} - {desc}")
-            
-            # Add column information
-            columns = schema.get("columns", [])
-            if columns:
-                col_list = ", ".join([col["name"] for col in columns])
-                context_parts.append(f"\n   Columns: {col_list}")
-                
-                # Add detailed column info with types
-                context_parts.append(f"\n   Column details:")
-                for col in columns:
-                    col_type = col.get("field_type", "")
-                    col_mode = col.get("mode", "NULLABLE")
-                    col_desc = col.get("description", "")
-                    detail = f"   - {col['name']} ({col_type}"
-                    if col_mode != "NULLABLE":
-                        detail += f", {col_mode}"
-                    detail += ")"
-                    if col_desc:
-                        detail += f" - {col_desc}"
-                    context_parts.append(detail)
-            context_parts.append("")
-        
-        # Add join information
-        context_parts.append("Important joins:")
-        context_parts.append("- orders.user_id = users.id")
-        context_parts.append("- orders.order_id = order_items.order_id")
-        context_parts.append("- order_items.product_id = products.id")
-        context_parts.append("")
-        
-        context_parts.append(
-            "SECURITY: If the query references any other dataset or table that is NOT one of these 4 tables above, "
-            "respond with: \"I can only answer questions about orders, order_items, products, and users data. "
-            "Please clarify which dataset you're interested in.\""
-        )
-        context_parts.append("")
-        context_parts.append("Generate clean, valid SQL queries only.")
-        
-        return "\n".join(context_parts)
-    
-    def _get_hardcoded_schema(self) -> str:
-        """Fallback hardcoded schema context."""
-        return """
-CRITICAL: You can ONLY query these 4 tables in bigquery-public-data.thelook_ecommerce:
-
-1. orders - customer orders with timestamps, status, and number of items
-2. order_items - products within each order, including price and cost
-3. products - catalog metadata like category, brand, and pricing
-4. users - customer demographics like age, gender, and location
-
-Available tables in bigquery-public-data.thelook_ecommerce:
-
-1. orders (order_id, user_id, status, created_at, returned_at, shipped_at, delivered_at, num_of_item)
-2. order_items (order_id, id, product_id, inventory_item_id, status, created_at, shipped_at, delivered_at, returned_at, sale_price, cost, sku)
-3. products (id, cost, category, name, brand, retail_price, department, sku, distribution_center_id)
-4. users (id, first_name, last_name, email, age, gender, state, street_address, postal_code, city, country, latitude, longitude, traffic_source, created_at)
-
-Important joins:
-- orders.user_id = users.id
-- orders.order_id = order_items.order_id
-- order_items.product_id = products.id
-
-SECURITY: If the query references any other dataset or table that is NOT one of these 4 tables above, 
-respond with: "I can only answer questions about orders, order_items, products, and users data. 
-Please clarify which dataset you're interested in."
-
-Generate clean, valid SQL queries only.
-"""
     
     def execute(self, state: AgentState) -> Dict[str, Any]:
         from src.utils.formatter import OutputFormatter
@@ -451,7 +300,7 @@ Generate clean, valid SQL queries only.
         discovery_result = state.get("discovery_result")
         retry_count = state.get("retry_count", 0)
         user_query = state.get("user_query", "")
-        context = self._load_schema_context()
+        context = ContextNode.get_schema_context()
         
         # Progress indicator (verbose only)
         if state.get("_verbose"):

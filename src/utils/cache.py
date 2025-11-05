@@ -66,7 +66,10 @@ class QueryCache:
                         return None
                     else:
                         cache_file.unlink()  # Delete expired
-                except Exception:
+                except Exception as e:
+                    # Log cache read error but don't fail - cache is optional
+                    import logging
+                    logging.getLogger(__name__).debug(f"Cache read error (JSON format): {e}")
                     pass
                 return None
         
@@ -92,7 +95,10 @@ class QueryCache:
                     return data
                 else:
                     cache_file.unlink()  # Delete expired
-            except Exception:
+            except Exception as e:
+                # Log cache read error but don't fail - cache is optional
+                import logging
+                logging.getLogger(__name__).debug(f"Cache read error (pickle format): {e}")
                 pass
         
         return None
@@ -122,7 +128,10 @@ class QueryCache:
         try:
             with open(cache_file, 'wb') as f:
                 pickle.dump(entry, f)
-        except Exception:
+        except Exception as e:
+            # Log cache write error but don't fail - cache is optional
+            import logging
+            logging.getLogger(__name__).debug(f"Cache write error: {e}")
             pass  # Silent fail on cache write
     
     def clear(self) -> None:
