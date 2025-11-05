@@ -256,48 +256,127 @@ class InputNode:
 
 class QueryBuilderNode:
     """Generate SQL or meta answers with Gemini while minimising token-heavy prompts."""
+    SQL_RULES = dedent("""
+CRITICAL SQL RULES (BigQuery • thelook_ecommerce)
+
+• Tables (ONLY): `bigquery-public-data.thelook_ecommerce.{orders, order_items, products, users}` — always full path with backticks.
+• Always alias tables (o, oi, p, u) and prefix every column. Never SELECT *.
+• Join keys:
+  - o.user_id = u.id
+  - o.order_id = oi.order_id
+  - oi.product_id = p.id
+• Use a single fact table as the driver (usually order_items as oi) to avoid double counting.
+
+AGGREGATION PATTERN (no windows inside aggregates)
+• Two-phase math:
+  1) parts = GROUP BY all dims
+  2) totals = GROUP BY fewer dims
+  3) join parts→totals; derive ratios with SAFE_DIVIDE; ROUND at output only.
+• Window functions (`... OVER (...)`) are allowed only in the outer SELECT (or QUALIFY), never inside SUM/COUNT/AVG/… and never inside GROUP BY/WHERE/HAVING.
+• Prefer CTEs for clarity; deterministic, lowercase snake_case aliases.
+
+PERCENT / RATIOS / NULLS
+• pct = 100 * SAFE_DIVIDE(part, total); per parent group sum(pct) ≈ 100.
+• COALESCE dimension values (e.g., COALESCE(u.gender,'unknown')).
+• Use SAFE_CAST for risky casts; avoid division by zero with SAFE_ functions.
+
+DATE/TIME (created_at is TIMESTAMP)
+• For month/year windows: WHERE col >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL N MONTH|YEAR))
+• Do NOT use TIMESTAMP_SUB with MONTH/YEAR (only DAY/HOUR/MIN/SEC).
+• Match types: don’t compare TIMESTAMP to DATE without wrapping DATE in TIMESTAMP().
+• For “most recent complete month/quarter”, cap the end at DATE_TRUNC(CURRENT_DATE(), MONTH|QUARTER) and compare with TIMESTAMP().
+
+REVENUE / SALES / RETURNS
+• Revenue = SUM(oi.sale_price). Prefer oi.status = 'Complete' when computing revenue-like metrics.
+• Exclude returns via oi.returned_at IS NULL when computing “net” metrics; include when “gross”.
+• Margin (if needed): SUM(oi.sale_price - p.cost) with proper join to products.
+
+DE-DUPLICATION & COUNTING
+• COUNT(DISTINCT ...) is expensive; use approx if acceptable (APPROX_COUNT_DISTINCT).
+• Beware many-to-many joins that inflate rows; aggregate at the fact grain before joining to dims.
+
+GEOGRAPHY & TEXT
+• Geography via users: join oi→o→u for u.country/state/city.
+• Use exact stored strings; if unsure (‘US’ vs ‘United States’), run a one-off DISCOVER:
+  SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+• Case-insensitive contains: REGEXP_CONTAINS(LOWER(p.name), r'iphone').
+
+DISCOVERY (sparingly)
+• Emit DISCOVER only when a value encoding is truly unknown (limit 1–2). Otherwise generate SQL directly.
+
+EFFICIENCY / SAFETY
+• Push filters before joins/aggregation; date-filter the fact first to cut bytes.
+• Avoid CROSS JOINs; ensure every JOIN has an ON clause.
+• Stable ordering for top-k: ORDER BY metric DESC, tie-break by id/name.
+• No DDL/DML; read-only SELECTs only.
+• Use Standard SQL.
+""").strip()
 
     MAIN_PROMPT = dedent("""
-You are **Orion**, an expert analyst for `bigquery-public-data.thelook_ecommerce`
-(tables: orders, order_items, products, users).
+You are an intelligent data analysis and engineer assistant named Orion, expert in writing SQL queries. You are an expert at analyzing e-commerce data from `bigquery-public-data.thelook_ecommerce` (tables: orders, order_items, products, users).
 
-Goal → Return **one line**:
-- `META:` if the user asks about your abilities or available data.
-- `SQL:` if they request actual data.
-- `DISCOVER:` only if you truly need to inspect distinct column values first.
-
-Rules:
-- Use only the four tables above with full path and backticks:
-  `bigquery-public-data.thelook_ecommerce.<table>`
-- Prefix columns with aliases (o, oi, p, u) to avoid ambiguity.
-- Don’t explain; output must begin with exactly `META:`, `SQL:` or `DISCOVER:`.
-
-Joins:
-  orders.user_id = users.id  
-  orders.order_id = order_items.order_id  
-  order_items.product_id = products.id
+{schema}
+{conv_context}
+{discovery_context}
 
 User query: {user_query}
-{history}
-{discovery}
-{retry_hint}
+{retry_instruction}
+
+ANALYZE THE QUERY:
+Handle follow-up questions (e.g., "show the same for last quarter", "break that down by region") by referencing conversation history above.
+Pay attention to corrections/clarifications (e.g., "I think you're wrong, check again", "actually it's X not Y") - use these to fix previous errors.
+
+Carefully determine what the user is asking:
+- If they're asking about YOUR CAPABILITIES, WHAT datasets/tables/columns are AVAILABLE, or general HELP → This is a META question about you
+- If they're asking about ACTUAL DATA (specific values, records, numbers, calculations from the database) → This needs a SQL query
+
+RESPONSE FORMAT (**CRITICAL - FOLLOW EXACTLY**):
+You MUST respond in one of THREE formats. Your response MUST start with one of these prefixes:
+
+1. If META question (about capabilities/datasets/tables):
+   Response: "META: <your answer>"
+   Example: "META: I can query the bigquery-public-data.thelook_ecommerce dataset..."
+   
+2. If you need to DISCOVER data values first (USE SPARINGLY):
+   Response: "DISCOVER: <exploration query>"
+   Example: "DISCOVER: SELECT DISTINCT gender FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20"
+   
+3. If you have enough information for SQL:
+   Response: "SQL: <query>"
+   Example: "SQL: SELECT * FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 10"
+
+CRITICAL: Your response MUST start with exactly "META:", "DISCOVER:", or "SQL:" - no other text before it!
+
+{SQL_RULES}
+
+Your response (MUST start with META:, SQL:, or DISCOVER:):
+
+Take a deep breath and think step-by-step to generate the best response.
 """)
 
 
     RETRY_PROMPT = dedent("""
-Previous SQL failed on BigQuery. Fix it.
+You are a SQL expert. Previous SQL queries failed on BigQuery. Learn from these errors and fix the query.
 
 {schema}
-User query: {user_query}
-Previous SQL: {previous_sql}
-Error: {error_log}
 
-Return only:
-SQL: <corrected query>
+Original user query: {user_query}
 
-Rules:
-- Keep full table paths with backticks.
-- Alias columns to resolve ambiguity.
+Previous SQL query that failed:
+{previous_sql}
+
+Error history (most recent last):
+{error_history}
+
+This is retry attempt {retry_count} of 3. Carefully analyze the error pattern and generate a corrected query.
+
+{SQL_RULES}
+
+Return ONLY the fixed SQL query, no explanations.
+Take a deep breath and think step-by-step to generate the correct query.
+
+Fixed SQL Query:
+
 """)
 
 
@@ -363,98 +442,15 @@ Rules:
             # Build error context from history for better self-healing
             error_context = "\n".join([f"- Attempt {i+1}: {err}" for i, err in enumerate(error_history)])
             
-            # This is a retry - include full error context for self-healing
-            prompt = f"""
-You are a SQL expert. Previous SQL queries failed. Learn from these errors and fix the query.
-
-{context}
-
-Original user query: {user_query}
-
-Previous SQL query that failed:
-{previous_sql}
-
-Error history (most recent last):
-{error_context}
-
-This is retry attempt {retry_count} of 3. Carefully analyze the error pattern and generate a corrected query.
-
-CRITICAL RULES:
-- Fix the SQL query based on the error message above
-- Use standard SQL syntax for BigQuery
-- ALWAYS prefix ALL table names with the FULL path: 'bigquery-public-data.thelook_ecommerce.'
-- IMPORTANT: For BigQuery public datasets, use backticks around the ENTIRE path, not each part
-- Examples of CORRECT table references:
-  * `bigquery-public-data.thelook_ecommerce.order_items`
-  * `bigquery-public-data.thelook_ecommerce.orders`
-  * `bigquery-public-data.thelook_ecommerce.products`
-  * `bigquery-public-data.thelook_ecommerce.users`
-- When referencing columns, use the table alias or full path:
-  * oi.sale_price (if table is aliased as oi)
-  * `bigquery-public-data.thelook_ecommerce.order_items`.sale_price
-- Examples of INCORRECT (DO NOT USE):
-  * `bigquery-public-data`.`thelook_ecommerce`.`order_items` ❌ (separate backticks)
-  * bigquery-public-data.thelook_ecommerce.order_items ❌ (missing backticks)
-  * bigquery.order_items ❌
-  * thelook_ecommerce.order_items ❌
-- ALWAYS use table aliases and prefix column names with the alias to avoid ambiguity
-  Example: SELECT u.gender, EXTRACT(YEAR FROM u.created_at) AS year, COUNT(*) AS count
-           FROM `bigquery-public-data.thelook_ecommerce.users` AS u
-           GROUP BY u.gender, year
-- Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
-- Use clear column aliases
-
-🚨 CRITICAL: DATE/TIME TYPE HANDLING - READ THIS FIRST IF ERROR MENTIONS TIMESTAMP/DATE! 🚨
-
-1. TIMESTAMP_SUB vs DATE_SUB:
-   - ERROR: "TIMESTAMP_SUB does not support the MONTH date part"
-   - CAUSE: You used TIMESTAMP_SUB with MONTH/YEAR interval - BigQuery doesn't support this!
-   - WRONG: WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 MONTH)
-   - CORRECT: WHERE created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
-   - RULE: For MONTH/YEAR intervals, ALWAYS use DATE_SUB, then wrap in TIMESTAMP() if comparing with TIMESTAMP column
-   - For DAY intervals with timestamps, you CAN use TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
-
-2. Type Matching:
-   - ERROR: "No matching signature for operator >= for argument types: TIMESTAMP, DATE"
-   - CAUSE: You're comparing TIMESTAMP column (e.g., created_at) with DATE value
-   - SOLUTION: Wrap DATE in TIMESTAMP() function: TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR))
-   - Example: WHERE o.created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
-   - Example: WHERE o.created_at >= TIMESTAMP('2024-01-01')
-
-3. Common Patterns:
-   - NEVER: WHERE created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH)
-   - ALWAYS: WHERE created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
-   - NEVER: TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 MONTH)
-   - ALWAYS: TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
-
-4. Quick Reference:
-   - Use DATE_SUB for: MONTH, YEAR intervals
-   - Use TIMESTAMP_SUB for: DAY, HOUR, MINUTE, SECOND intervals (when working with timestamps)
-   - created_at columns are TIMESTAMP type - cast DATE values to TIMESTAMP using TIMESTAMP()
-
-REVENUE/SALES QUERY BEST PRACTICES (if query involves revenue/sales):
-- ALWAYS filter order_items.status = 'Complete' when calculating revenue - only completed orders count
-- Join order_items → orders → users for geographical filters (country, state, city)
-- Join order_items → products to get product names/info
-- Use SUM(oi.sale_price) for revenue calculations
-- If query returned empty results, check: 1) Did you filter status='Complete'? 2) Did you use correct geographical location name?
-
-GEOGRAPHICAL QUERY BEST PRACTICES (if query involves location/country/region):
-- Always join order_items → orders → users to access geographical fields (u.country, u.state, u.city)
-- IMPORTANT: If uncertain about exact format (e.g., "United States" vs "US"), use DISCOVER first:
-  * DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-  * This will show the exact format used in the database
-- Use exact location names as they appear in the discovered results
-- For countries: discover to see if database uses full names ('United States') or abbreviations ('US')
-- For states/cities: discover to see exact values if uncertain
-- If query mentions "[country/region/state/city]", filter by the appropriate geographical field (u.country, u.state, u.city) using discovered exact values
-- Examples: "in the US" → DISCOVER country values first to see if it's 'US' or 'United States', then use discovered value
-- If previous query returned empty results, DISCOVER geographical values to identify correct format
-
-- Return ONLY the fixed SQL query, no explanations
-
-Fixed SQL Query:
-"""
+            # This is a retry - use the retry prompt template
+            prompt = self.RETRY_PROMPT.format(
+                schema=context,
+                user_query=user_query,
+                previous_sql=previous_sql,
+                error_history=error_context,
+                retry_count=retry_count,
+                SQL_RULES=self.SQL_RULES
+            )
         else:
             # Initial query - determine if it's a meta-question or requires SQL
             
@@ -484,146 +480,15 @@ Fixed SQL Query:
             elif discovery_count > 0:
                 discovery_context = f"\n\n⚠️ WARNING: You have already generated {discovery_count} discovery queries. You MUST generate SQL now, not another DISCOVER query.\n"
             
-            prompt = f"""
-You are an intelligent data analysis assistant named Orion. Your role is to help users query and analyze e-commerce data.
-
-{context}
-{conv_context}
-{discovery_context}
-User query: {user_query}
-{retry_instruction}
-ANALYZE THE QUERY:
-Handle follow-up questions (e.g., "show the same for last quarter", "break that down by region") by referencing conversation history above.
-Pay attention to corrections/clarifications (e.g., "I think you're wrong, check again", "actually it's X not Y") - use these to fix previous errors.
-
-Carefully determine what the user is asking:
-- If they're asking about YOUR CAPABILITIES, WHAT datasets/tables/columns are AVAILABLE, or general HELP → This is a META question about you
-- If they're asking about ACTUAL DATA (specific values, records, numbers, calculations from the database) → This needs a SQL query
-
-DATA DISCOVERY APPROACH (USE SPARINGLY):
-CRITICAL: If discovery results are provided above, DO NOT generate another DISCOVER query - use those results to generate SQL directly.
-
-PREFER DIRECT SQL GENERATION:
-- For simple queries like "males and females count", use common encodings directly:
-  * Gender: 'M' for male, 'F' for female
-  * Status: 'Complete', 'Shipped', 'Processing', etc.
-- Only use DISCOVER if you're truly uncertain about the exact encoding AND the query explicitly requires it
-
-WHEN TO USE DISCOVERY FOR GEOGRAPHICAL QUERIES:
-- If you're uncertain about the exact format of country/state/city names (e.g., "United States" vs "US", "United Kingdom" vs "UK")
-- If the query mentions a country/region but you're unsure of the exact spelling or format in the database
-- If previous queries returned empty results, discovery can help identify the correct format
-- Examples of when to discover:
-  * Query mentions "US" or "United States" → DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-  * Query mentions "UK" or "United Kingdom" → DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-  * Query mentions a state/city but format is uncertain → DISCOVER: SELECT DISTINCT state/city FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-
-If you're UNCERTAIN about data values AND no discovery results exist above:
-1. Generate a DISCOVERY query to explore the data
-2. Use DISTINCT to find unique values in the relevant column
-3. Limit to 20 rows for fast results
-4. For geographical queries, discover country/state/city values to see exact format
-
-DISCOVERY QUERY FORMAT (ONLY if no discovery results exist above AND truly uncertain):
-When you need to discover data values, respond with "DISCOVER:" prefix:
-Example: "DISCOVER: SELECT DISTINCT gender FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
-Geographical example: "DISCOVER: SELECT DISTINCT country FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
-
-After seeing discovery results, you'll be asked again to generate the main query using discovered information.
-
-EXAMPLES OF META QUESTIONS (answer directly, no SQL needed):
-- "which dataset can you query?"
-- "what tables are available?"
-- "what columns are in the orders table?"
-- "what can you do?"
-- "help"
-- "tell me about your capabilities"
-
-EXAMPLES OF SQL QUESTIONS:
-- "what is the most expensive product?" → Direct SQL
-- "how many orders were placed?" → Direct SQL
-- "show me the top 10 customers" → Direct SQL
-- "show me the males and females count per year" → Direct SQL (use gender IN ('M', 'F'))
-- "how many females are in orders?" → Direct SQL (use gender = 'F')
-- "what are the top products by revenue?" → Direct SQL (MUST filter oi.status = 'Complete' for revenue)
-- "what are the top 3 products sold in the US by revenue?" → DISCOVER country values first (to see if it's 'US' or 'United States'), then SQL
-- "what are the top 3 products sold in United States by revenue?" → DISCOVER country values first (to confirm exact format), then SQL
-- "what are the top products in [country/region]?" → If uncertain about format, DISCOVER first, then SQL (join order_items → orders → users → products, filter by u.country/u.state/u.city)
-- "show me sales by country" → Direct SQL (join order_items → orders → users, group by u.country, filter oi.status='Complete')
-- "what is the revenue in California?" → DISCOVER state values first (to confirm exact format), then SQL
-- "what are the order statuses?" → DISCOVER status values first (if truly uncertain), then SQL
-
-RESPONSE FORMAT (CRITICAL - FOLLOW EXACTLY):
-You MUST respond in one of THREE formats. Your response MUST start with one of these prefixes:
-
-1. If META question (about capabilities/datasets/tables):
-   Response: "META: <your answer>"
-   Example: "META: I can query the bigquery-public-data.thelook_ecommerce dataset..."
-   
-2. If you need to DISCOVER data values first:
-   Response: "DISCOVER: <exploration query>"
-   Example: "DISCOVER: SELECT DISTINCT gender FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
-   
-3. If you have enough information for SQL:
-   Response: "SQL: <query>"
-   Example: "SQL: SELECT * FROM \`bigquery-public-data.thelook_ecommerce.orders\` LIMIT 10"
-
-CRITICAL: Your response MUST start with exactly "META:", "DISCOVER:", or "SQL:" - no other text before it!
-
-IMPORTANT: 
-- For META questions, provide a helpful answer directly - do NOT generate SQL
-- For SQL questions, provide ONLY the SQL query - no explanations or text before the SQL:
-
-CRITICAL SQL RULES (for SQL and DISCOVER queries):
-- Use standard SQL syntax for BigQuery
-- ALWAYS prefix ALL table names with the FULL path: 'bigquery-public-data.thelook_ecommerce.'
-- IMPORTANT: For BigQuery public datasets, use backticks around the ENTIRE path, not each part
-- Examples: `bigquery-public-data.thelook_ecommerce.order_items`
-- ALWAYS use table aliases and prefix column names with the alias to avoid ambiguity
-  Example: SELECT u.gender, EXTRACT(YEAR FROM u.created_at) AS year, COUNT(*) AS count
-           FROM `bigquery-public-data.thelook_ecommerce.users` AS u
-           GROUP BY u.gender, year
-- Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
-- Use clear column aliases
-
-REVENUE/SALES QUERY BEST PRACTICES (CRITICAL):
-When calculating revenue or sales from order_items:
-1. ALWAYS filter order_items.status = 'Complete' - only completed orders count as revenue
-2. Join order_items → orders → users for geographical filters (country, state, city)
-3. Join order_items → products to get product names/info
-4. Use SUM(oi.sale_price) for revenue calculations
-
-GEOGRAPHICAL QUERY BEST PRACTICES:
-When filtering by geographical location (country, state, city):
-1. Always join order_items → orders → users to access geographical fields (u.country, u.state, u.city)
-2. IMPORTANT: Use exact geographical names as they appear in the database
-3. If uncertain about the exact format (e.g., "United States" vs "US", "United Kingdom" vs "UK"), use DISCOVER first:
-   - DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-   - This will show you the exact format used in the database
-4. Country names may be full names (e.g., 'United States') or abbreviations (e.g., 'US') - discover to see which format is used
-5. For state/city filters, if uncertain, discover the exact values:
-   - DISCOVER: SELECT DISTINCT state FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-   - DISCOVER: SELECT DISTINCT city FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-6. After discovery, use the exact values you found in your SQL query
-7. Examples of geographical filters (use discovered values):
-   - Country: WHERE u.country = 'United States' (if discovered) or WHERE u.country = 'US' (if discovered)
-   - State: WHERE u.state = 'California' (use exact value from discovery)
-   - City: WHERE u.city = 'New York' (use exact value from discovery)
-   - Multiple countries: WHERE u.country IN ('United States', 'Canada') (use discovered values)
-8. When querying "top products by revenue in [country/region]":
-   - If uncertain about country format, DISCOVER first
-   - Join: order_items → orders → users → products
-   - Filter by: u.country (or u.state, u.city) = '[exact discovered location value]'
-   - Filter by: oi.status = 'Complete' (for revenue queries)
-   - Group by: product fields (p.id, p.name)
-   - Order by: revenue DESC
-9. For geographical analysis queries (e.g., "sales by country", "revenue by state"):
-   - Group by: u.country (or u.state, u.city)
-   - Join: order_items → orders → users
-   - Filter by: oi.status = 'Complete' (for revenue queries)
-
-Your response (MUST start with META: or SQL:):
-"""
+            # Use the main prompt template
+            prompt = self.MAIN_PROMPT.format(
+                schema=context,
+                conv_context=conv_context,
+                discovery_context=discovery_context,
+                user_query=user_query,
+                retry_instruction=retry_instruction,
+                SQL_RULES=self.SQL_RULES
+            )
         
         try:
             
@@ -1576,7 +1441,7 @@ Keep it concise and business-focused. Use bullet points."""
         
         columns_str = "\n".join(columns_info)
         
-        prompt = f"""Analyze the user's query and data to suggest the optimal visualization.
+        prompt = f"""You are an expert data analyst and expert in data visualization. Analyze the user's query and data to suggest the optimal visualization.
 
 User query: {user_query}
 Analysis type: {analysis_type}
