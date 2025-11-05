@@ -126,7 +126,14 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
     Handle export options sequentially, generating visualization suggestions lazily.
     Returns True if exports were requested in the original query.
     """
-    if df is None or len(df) == 0:
+    # Validate df is a DataFrame
+    import pandas as pd
+    if df is None:
+        return False
+    if not isinstance(df, pd.DataFrame):
+        print(OutputFormatter.error(f"❌ Invalid data type: expected DataFrame, got {type(df).__name__}"))
+        return False
+    if len(df) == 0:
         return False
     
     # NOTE: visualization_suggestion is NO LONGER auto-generated
@@ -194,24 +201,25 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
         filepath = visualizer.save_csv(df)
         print(f"✅ CSV saved to: {filepath}")
     
-    # Ask about chart second - generate suggestion lazily ONLY when needed
-    user_query = result.get("user_query", "") if result else ""
-    viz_suggestion = _generate_viz_suggestion_lazy(user_query, df)
-    
-    if viz_suggestion:
-        suggested_type = viz_suggestion.get("chart_type", "bar")
-        suggested_x = viz_suggestion.get("x_col", "")
-        suggested_y = viz_suggestion.get("y_col", "")
-        suggested_hue = viz_suggestion.get("hue_col")
-        suggestion_text = f"{suggested_type} chart ({suggested_x} vs {suggested_y}"
-        if suggested_hue:
-            suggestion_text += f", grouped by {suggested_hue}"
-        suggestion_text += ")"
-        chart_prompt = f"\n📊 Gemini suggests: {suggestion_text}\n    Create this chart? (yes/no or specify 'chart [type]')\n    → "
-    else:
-        chart_prompt = "\n📊 Would you like to create a chart? (type 'chart [type]' or 'no')\n    Types: bar, line, pie, scatter, box, candle\n    → "
-    
+    # Ask about chart second - ONLY generate suggestion AFTER user says they want a chart
+    chart_prompt = "\n📊 Would you like to create a chart? (type 'chart [type]' or 'no')\n    Types: bar, line, pie, scatter, box, candle\n    → "
     chart_response = input(chart_prompt).strip().lower()
+    
+    # Only generate suggestion AFTER user says they want a chart (saves API calls)
+    if chart_response not in ["no", "n", ""]:
+        user_query = result.get("user_query", "") if result else ""
+        viz_suggestion = _generate_viz_suggestion_lazy(user_query, df)
+        
+        if viz_suggestion:
+            suggested_type = viz_suggestion.get("chart_type", "bar")
+            suggested_x = viz_suggestion.get("x_col", "")
+            suggested_y = viz_suggestion.get("y_col", "")
+            suggested_hue = viz_suggestion.get("hue_col")
+            suggestion_text = f"{suggested_type} chart ({suggested_x} vs {suggested_y}"
+            if suggested_hue:
+                suggestion_text += f", grouped by {suggested_hue}"
+            suggestion_text += ")"
+            print(OutputFormatter.info(f"💡 Gemini suggests: {suggestion_text}"))
     
     if chart_response.startswith("chart "):
         # User specified a type manually
@@ -336,7 +344,7 @@ def main():
     print(OutputFormatter.info(f"Using Gemini model: {config.gemini_model}"))
     print(OutputFormatter.info(f"Results directory: {config.output_directory}"))
     print(OutputFormatter.format("💡 **Ask me anything about the e-commerce data!**"))
-    print("   Commands: 'exit', 'save session', 'load session [path]', 'clear cache'")
+    print("   Commands: 'exit', 'save session', 'load session [path]', 'clear cache', 'rate limit status', 'reset rate limiter'")
     print(OutputFormatter.format("   💾 Tip: Results are cached for faster repeated queries\n"))
     
     agent = OrionGraph()
@@ -382,10 +390,31 @@ def main():
                 print(OutputFormatter.success("Cache cleared"))
                 continue
             
+            if query_lower == "rate limit status":
+                from src.utils.rate_limiter import get_global_rate_limiter
+                rate_limiter = get_global_rate_limiter()
+                status = rate_limiter.get_status()
+                print(f"📊 Rate Limiter Status:")
+                print(f"   Calls used: {status['current_calls']}/{status['max_calls']}")
+                print(f"   Window: {status['window_seconds']} seconds")
+                print(f"   Can proceed: {'Yes' if status['can_proceed'] else 'No (waiting)'}")
+                continue
+            
+            if query_lower == "reset rate limiter":
+                from src.utils.rate_limiter import get_global_rate_limiter
+                rate_limiter = get_global_rate_limiter()
+                rate_limiter.reset()
+                print(OutputFormatter.success("Rate limiter reset - ready for new calls"))
+                continue
+            
             # Use LLM to detect if this is a chart customization request for previous data
+            # Only check if user query contains chart-related keywords (saves API calls)
             is_chart_query = False
+            chart_keywords = ["chart", "graph", "plot", "visualize", "bar", "line", "pie", "scatter", "box", "candle"]
             if last_result is not None and last_result.get("query_result") is not None:
-                is_chart_query = _is_chart_customization_query(user_query, last_result.get("user_query", ""))
+                # Only call LLM if query contains chart keywords (saves unnecessary API calls)
+                if any(kw in user_query.lower() for kw in chart_keywords):
+                    is_chart_query = _is_chart_customization_query(user_query, last_result.get("user_query", ""))
             
             if is_chart_query:
                 # Regenerate visualization suggestion with new specifications
@@ -443,6 +472,13 @@ def main():
             
             # Update conversation history (limit to last 5)
             df = result.get("query_result")
+            # Validate df is a DataFrame (not corrupted from cache)
+            import pandas as pd
+            if df is not None and not isinstance(df, pd.DataFrame):
+                print(OutputFormatter.error(f"❌ Data corruption detected: query_result is {type(df).__name__}, expected DataFrame. Clearing cache..."))
+                cache.clear()
+                # Skip this result
+                continue
             result_summary = "No results" if df is None or len(df) == 0 else f"{len(df)} rows"
             conversation_history.append({
                 "query": user_query,

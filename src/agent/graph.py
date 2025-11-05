@@ -37,36 +37,81 @@ class OrionGraph:
     
     def _route_from_query_builder(self, state: AgentState) -> str:
         """Route from query builder - check for meta answers, discovery, or SQL."""
+        from src.utils.formatter import OutputFormatter
+        import sys
+        
         final_output = state.get("final_output", "")
         sql_query = state.get("sql_query", "")
         discovery_query = state.get("discovery_query", "")
+        discovery_result = state.get("discovery_result")
+        discovery_count = state.get("discovery_count", 0)
         query_error = state.get("query_error")
         retry_count = state.get("retry_count", 0)
-        
+        verbose = state.get("_verbose", False)
         # If it's a meta answer, go directly to output
         if final_output and final_output.strip():
+            sys.stdout.flush()
             return "output"
+        
+        # If discovery_count is too high, prevent infinite loops
+        if discovery_count >= 2:
+            sys.stdout.flush()
+            return "output"  # Force output instead of looping
+        
+        # If discovery_result exists but we've tried multiple times to generate SQL, force output
+        if discovery_result and not sql_query:
+            # If we've already tried once (retry_count > 0), force output to prevent loops
+            if retry_count >= 2:
+                sys.stdout.flush()
+                return "output"  # Prevent infinite loop after discovery
+            # If discovery_result exists but no SQL, we should be generating SQL now
+            # This is normal - allow it to proceed
+            sys.stdout.flush()
         
         # If it's a discovery query, execute it first
         if discovery_query and discovery_query.strip():
+            sys.stdout.flush()
             return "bigquery_executor"  # Execute discovery, then loop back
+        
+        # If discovery_result exists but no SQL yet, this is normal - we'll generate SQL
+        # But if discovery_result exists AND we have SQL, we should proceed
         
         # If there's an error, check if we should retry
         if query_error:
             if not sql_query:
+                # CRITICAL: "Discovery already completed" means LLM ignored discovery_result
+                # Force output immediately - don't retry (would loop infinitely)
+                if "Discovery already completed" in query_error:
+                    sys.stdout.flush()
+                    return "output"
+                
+                # CRITICAL: Rate limit errors should NEVER retry through routing
+                # QueryBuilderNode already handles exponential backoff internally
+                # If we hit rate limit, output the error immediately - don't loop
+                if "Rate limit" in query_error or "429" in query_error or "Resource exhausted" in query_error:
+                    sys.stdout.flush()
+                    return "output"
+                
+                # Only retry for format errors (not rate limits)
                 should_retry = (
-                    ("Invalid response format" in query_error and retry_count < 3) or
-                    ("Rate limit" in query_error and retry_count < 3)
+                    "Invalid response format" in query_error and retry_count < 3
                 )
                 if should_retry:
+                    sys.stdout.flush()
                     return "query_builder"
+                sys.stdout.flush()
                 return "output"
         
         # SQL generated successfully, proceed to validation
+        sys.stdout.flush()
         return "validation"
     
     def _route_from_validation(self, state: AgentState) -> str:
         """Route from validation - check approval if passed, output if failed."""
+        # Absolute terminator: if final_output is set, always go to output
+        if state.get("final_output"):
+            return "output"
+        
         validation_passed = state.get("validation_passed", False)
         query_error = state.get("query_error")
         
@@ -77,13 +122,34 @@ class OrionGraph:
     
     def _route_from_bigquery_executor(self, state: AgentState) -> str:
         """Route from bigquery executor - check if discovery or main query."""
-        discovery_result = state.get("discovery_result")
+        from src.utils.formatter import OutputFormatter
+        import sys
         
-        # If we just completed a discovery query, go back to query builder
-        if discovery_result:
+        verbose = state.get("_verbose", False)
+        final_output = state.get("final_output")
+        discovery_query = state.get("discovery_query")
+        discovery_result = state.get("discovery_result")
+        sql_query = state.get("sql_query")
+        # Absolute terminator: if final_output is set, always go to output
+        if final_output:
+            sys.stdout.flush()
+            return "output"
+        
+        # If we just completed a discovery query (no sql_query yet), go back to query builder
+        # BUT: if sql_query exists, we've already moved past discovery, so check results
+        if discovery_result and not sql_query and not discovery_query:
+            # Discovery completed, no SQL yet - go back to generate SQL
+            sys.stdout.flush()
             return "query_builder"
         
+        # If discovery_query still exists, something went wrong - prevent infinite loop
+        if discovery_query:
+            # Discovery query wasn't cleared - this shouldn't happen, but prevent loop
+            sys.stdout.flush()
+            return "output"
+        
         # Regular query completed, check results
+        sys.stdout.flush()
         return "result_check"
     
     def _route_from_result_check(self, state: AgentState) -> str:
@@ -91,19 +157,36 @@ class OrionGraph:
         Route from result check based on execution outcome.
         Implements self-healing retry logic and empty result handling.
         """
+        from src.utils.formatter import OutputFormatter
+        import sys
+        
+        verbose = state.get("_verbose", False)
+        final_output = state.get("final_output")
         query_error = state.get("query_error")
         retry_count = state.get("retry_count", 0)
         has_empty_results = state.get("has_empty_results", False)
+        # Absolute terminator: if final_output is set, always go to output
+        if final_output:
+            sys.stdout.flush()
+            return "output"
         
         # Case 1: Error occurred and retry limit not reached - self-heal by retrying
         if query_error and retry_count < 3:
+            sys.stdout.flush()
             return "query_builder"
         
-        # Case 2: Empty results - generate insight explanation
+        # Case 2: Retry limit exceeded - output error
+        if query_error and retry_count >= 3:
+            sys.stdout.flush()
+            return "output"
+        
+        # Case 3: Empty results - generate insight explanation
         if has_empty_results:
+            sys.stdout.flush()
             return "insight_generator"
         
-        # Case 3: Success with data - analyze it
+        # Case 4: Success with data - analyze it
+        sys.stdout.flush()
         return "analysis"
     
     def _build_graph(self) -> StateGraph:
@@ -197,6 +280,7 @@ class OrionGraph:
             "sql_query": "",
             "discovery_query": None,
             "discovery_result": None,
+            "discovery_count": 0,  # Track discovery queries to prevent infinite loops
             "validation_passed": None,
             "estimated_cost_gb": None,
             "query_result": None,
@@ -217,6 +301,8 @@ class OrionGraph:
             "_verbose": verbose  # For progress updates
         }
         
-        result = self.app.invoke(initial_state)
+        # Set recursion limit to prevent infinite loops
+        config = {"recursion_limit": 50}  # Increase from default 25
+        result = self.app.invoke(initial_state, config)
         return result
 
