@@ -1,6 +1,6 @@
 # 🌟 Orion - AI-Powered Data Analysis Agent
 
-[![PyPI version](https://badge.fury.io/py/orion-data-analyst.svg)](https://pypi.org/project/orion-data-analyst/)
+[![PyPI version](https://badge.fury.io/py/orion-data-analyst.svg?v=1.0.8)](https://pypi.org/project/orion-data-analyst/)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![LangGraph](https://img.shields.io/badge/🦜_LangGraph-0.2+-green.svg)](https://langchain-ai.github.io/langgraph/)
