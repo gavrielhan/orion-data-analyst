@@ -42,12 +42,7 @@ Built with **LangGraph** for modular AI reasoning and **Google BigQuery** for da
 pip install orion-data-analyst
 ```
 
-**Option 2: One-Line Install Script**
-```bash
-curl -sSL https://raw.githubusercontent.com/gavrielhan/orion-data-analyst/main/install.sh | bash
-```
-
-**Option 3: Install from Source**
+**Option 2: Install from Source**
 ```bash
 git clone https://github.com/gavrielhan/orion-data-analyst.git
 cd orion-data-analyst
