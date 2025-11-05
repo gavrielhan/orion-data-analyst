@@ -15,38 +15,87 @@ Rules:
 - Always alias tables (o, oi, p, u) and qualify ambiguous columns
 - Use only these 4 tables; reject others
 
-REVENUE/SALES QUERY BEST PRACTICES:
-- When calculating revenue or sales from order_items, ALWAYS filter order_items.status = 'Complete'
-- Only completed orders count as revenue - filtering by status is critical
-- Join order_items → orders → users for geographical filters (country, state, city)
-- Join order_items → products to get product names/info
-- Use SUM(oi.sale_price) for revenue calculations
+Encoding facts:
+  • gender values: 'M', 'F' (uppercase)
+  • country names: full names (e.g., 'United States', 'Brasil', 'Canada')
+  • status values: 'Complete', 'Returned', 'Shipped', 'Processing', 'Cancelled'
+  • timestamps: UTC
+  • prices and costs: FLOAT
+  • IDs: INTEGER
+
+=======================================================================
+1. order_items — individual products sold per order
+=======================================================================
+id                    INTEGER    e.g. 142961
+order_id              INTEGER    joins to orders.order_id
+user_id               INTEGER    joins to users.id
+product_id            INTEGER    joins to products.id
+inventory_item_id     INTEGER    warehouse inventory reference
+status                STRING     'Complete', 'Returned', etc.
+created_at            TIMESTAMP  e.g. 2022-06-17 02:52:23 UTC
+shipped_at            TIMESTAMP
+delivered_at          TIMESTAMP
+returned_at           TIMESTAMP  may be NULL unless returned
+sale_price            FLOAT      e.g. 0.49
+
+Notes:
+  - One order → many items (avg 3–4)
+  - Use SUM(oi.sale_price) for revenue where oi.status='Complete'
+
+=======================================================================
+2. orders — overall purchase records
+=======================================================================
+order_id              INTEGER    e.g. 41
+user_id               INTEGER    joins to users.id
+status                STRING     'Complete', 'Returned', etc.
+gender                STRING     'M' or 'F'
+created_at            TIMESTAMP  order creation
+returned_at           TIMESTAMP
+shipped_at            TIMESTAMP
+delivered_at          TIMESTAMP
+num_of_item           INTEGER    e.g. 4
+
+Notes:
+  - Represents full order summary
+  - Link to users and order_items for details
+
+=======================================================================
+3. products — product catalog metadata
+=======================================================================
+id                    INTEGER    e.g. 13842
+cost                  FLOAT      e.g. 2.52
+category              STRING     e.g. 'Accessories', 'Electronics'
+name                  STRING     e.g. 'Low Profile Dyed Cotton Twill Cap'
+brand                 STRING     e.g. 'MG', 'Apple', 'Nike'
+retail_price          FLOAT      e.g. 6.25
+department            STRING     e.g. 'Men', 'Women', 'Unisex'
+sku                   STRING     unique product code
+distribution_center_id INTEGER   e.g. 1
+
+Notes:
+  - cost < retail_price for 99% of rows
+  - used for product joins from order_items
+
+=======================================================================
+4. users — customer demographics
+=======================================================================
+id                    INTEGER    e.g. 59933
+first_name            STRING     e.g. 'Greg'
+last_name             STRING     e.g. 'Hanson'
+email                 STRING     e.g. 'greghanson@example.net'
+age                   INTEGER    e.g. 58
+gender                STRING     'M' or 'F'
+state                 STRING     e.g. 'Acre'
+city                  STRING     may be NULL
+country               STRING     e.g. 'Brasil'
+traffic_source        STRING     e.g. 'Search', 'Email', 'Organic'
+created_at            TIMESTAMP  signup date
+user_geom             GEOGRAPHY  POINT(long lat)
+latitude              FLOAT      e.g. -8.06
+longitude             FLOAT      e.g. -72.87
+
+Notes:
+  - ~100k unique users, mostly from United States, Brasil, Canada
+  - countries stored as full names, not ISO codes
 
 
-GEOGRAPHICAL QUERY BEST PRACTICES:
-- Always join order_items → orders → users to access geographical fields (u.country, u.state, u.city)
-- IMPORTANT: If uncertain about exact format (e.g., "United States" vs "US", "United Kingdom" vs "UK"), use DISCOVER first:
-  * DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-  * This will show the exact format used in the database
-- Use exact location names as they appear in the discovered results
-- For countries: discover to see if database uses full names (e.g., 'United States') or abbreviations (e.g., 'US')
-- For states/cities: discover to see exact values if uncertain:
-  * DISCOVER: SELECT DISTINCT state FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-  * DISCOVER: SELECT DISTINCT city FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
-- When query mentions a location (country, state, city), filter by the appropriate field using discovered exact values:
-  * Country: WHERE u.country = '[exact discovered value]'
-  * State: WHERE u.state = '[exact discovered value]'
-  * City: WHERE u.city = '[exact discovered value]'
-- For "top products by revenue in [location]" queries:
-  * If uncertain about location format, DISCOVER first
-  * Join: order_items → orders → users → products
-  * Filter by appropriate geographical field (u.country, u.state, or u.city) using discovered exact value
-  * Filter by: oi.status = 'Complete' (for revenue queries)
-  * Group by: product fields (p.id, p.name)
-  * Order by: revenue DESC
-- For geographical analysis (e.g., "sales by country", "revenue by state"):
-  * Join: order_items → orders → users
-  * Group by: u.country (or u.state, u.city)
-  * Filter by: oi.status = 'Complete' (for revenue queries)
-  * Aggregate: SUM(oi.sale_price) for revenue, COUNT(*) for counts
-- If previous query returned empty results, DISCOVER geographical values to identify correct format

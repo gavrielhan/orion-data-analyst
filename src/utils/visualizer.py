@@ -170,6 +170,68 @@ class Visualizer:
         # Default to first categorical
         return cat_cols[0]
     
+    def _prepare_data_for_chart(self, df: pd.DataFrame, x_col: str, y_col: str, 
+                                 chart_type: str, hue_col: Optional[str] = None) -> pd.DataFrame:
+        """
+        Intelligently prepare and sort data for charting based on chart type and column characteristics.
+        This ensures proper ordering for time series, value-based sorting, etc.
+        """
+        plot_df = df.copy()
+        
+        # Try to convert datetime-like columns to proper datetime type
+        if x_col in plot_df.columns:
+            x_col_lower = x_col.lower()
+            if any(kw in x_col_lower for kw in ['date', 'time', 'year', 'month', 'day', 'quarter', 'week']):
+                try:
+                    # Try converting to datetime
+                    plot_df[x_col] = pd.to_datetime(plot_df[x_col], errors='coerce')
+                    # Remove any rows where conversion failed
+                    plot_df = plot_df.dropna(subset=[x_col])
+                except Exception:
+                    pass  # If conversion fails, continue with original data type
+        
+        # Apply sorting based on chart type
+        if chart_type == "line":
+            # Line charts: ALWAYS sort by x_col for proper time series connection
+            # This is critical - without sorting, lines connect points in wrong order
+            plot_df = plot_df.sort_values(by=x_col)
+            
+        elif chart_type == "bar":
+            # Bar charts: Sort by value (y_col) descending for better visualization
+            # OR if x_col is time-based, sort by x_col ascending
+            if x_col in plot_df.columns:
+                x_col_lower = x_col.lower()
+                is_time_based = any(kw in x_col_lower for kw in ['date', 'time', 'year', 'month', 'day', 'quarter', 'week'])
+                if is_time_based or pd.api.types.is_datetime64_any_dtype(plot_df[x_col]):
+                    # Sort by time ascending
+                    plot_df = plot_df.sort_values(by=x_col)
+                else:
+                    # Sort by value descending (highest first)
+                    plot_df = plot_df.sort_values(by=y_col, ascending=False)
+            
+        elif chart_type == "pie":
+            # Pie charts: Sort by value descending (largest slices first)
+            plot_df = plot_df.sort_values(by=y_col, ascending=False)
+            
+        elif chart_type == "scatter":
+            # Scatter plots: No sorting needed (order doesn't matter)
+            pass
+            
+        elif chart_type == "box":
+            # Box plots: If x_col is categorical, sort by category name or by y_col median
+            if x_col in plot_df.columns:
+                x_col_lower = x_col.lower()
+                is_time_based = any(kw in x_col_lower for kw in ['date', 'time', 'year', 'month', 'day', 'quarter', 'week'])
+                if is_time_based or pd.api.types.is_datetime64_any_dtype(plot_df[x_col]):
+                    # Sort by time ascending
+                    plot_df = plot_df.sort_values(by=x_col)
+                else:
+                    # Sort by median of y_col for each x_col category
+                    medians = plot_df.groupby(x_col)[y_col].median().sort_values(ascending=False)
+                    plot_df[x_col] = pd.Categorical(plot_df[x_col], categories=medians.index, ordered=True)
+        
+        return plot_df
+    
     def create_chart(self, df: pd.DataFrame, chart_type: str, 
                     x_col: Optional[str] = None, y_col: Optional[str] = None,
                     title: Optional[str] = None, hue_col: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -194,13 +256,18 @@ class Visualizer:
             if hue_col and hue_col not in df.columns:
                 return None, f"Column '{hue_col}' not found in data. Available columns: {', '.join(df.columns)}"
             
-            # Intelligently auto-detect columns if not specified
+            # Intelligently auto-detect columns ONLY if not explicitly provided
+            # If columns are explicitly provided (e.g., from Gemini suggestion), ALWAYS use them
             if x_col is None or y_col is None:
                 x_col, y_col = self._smart_column_selection(df, chart_type)
             
             # Validate selected columns
             if x_col not in df.columns or y_col not in df.columns:
                 return None, f"Auto-selected columns invalid. X: {x_col}, Y: {y_col}. Available: {', '.join(df.columns)}"
+            
+            # Prepare data with intelligent sorting before plotting
+            # Sort data appropriately based on chart type and column types
+            df = self._prepare_data_for_chart(df, x_col, y_col, chart_type, hue_col)
             
             if chart_type == "bar":
                 self._create_bar_chart(df, x_col, y_col, title, hue_col)
@@ -235,8 +302,9 @@ class Visualizer:
             return None, f"Chart creation failed: {str(e)}"
     
     def _create_bar_chart(self, df: pd.DataFrame, x_col: str, y_col: str, title: str, hue_col: Optional[str] = None):
-        """Create bar chart with optional grouping."""
-        # Limit to top 15 items for readability
+        """Create bar chart with optional grouping. Data should already be sorted appropriately."""
+        # Data is already sorted by _prepare_data_for_chart
+        # Limit to top 15 items for readability (but preserve sorting order)
         plot_df = df.head(15) if len(df) > 15 else df
         if hue_col and hue_col in df.columns:
             ax = sns.barplot(data=plot_df, x=x_col, y=y_col, hue=hue_col, palette="viridis")
@@ -253,14 +321,23 @@ class Visualizer:
         plt.ylabel(y_col)
     
     def _create_line_chart(self, df: pd.DataFrame, x_col: str, y_col: str, title: str, hue_col: Optional[str] = None):
-        """Create line chart with optional grouping."""
-        if hue_col and hue_col in df.columns:
-            for group in df[hue_col].unique():
-                group_df = df[df[hue_col] == group]
-                plt.plot(group_df[x_col], group_df[y_col], marker='o', linewidth=2, markersize=6, label=group)
+        """
+        Create line chart with optional grouping.
+        Data should already be sorted by _prepare_data_for_chart, but we ensure proper sorting here too.
+        """
+        # Ensure data is sorted by x_col (critical for line charts)
+        plot_df = df.sort_values(by=x_col) if x_col in df.columns else df
+        
+        if hue_col and hue_col in plot_df.columns:
+            for group in plot_df[hue_col].unique():
+                group_df = plot_df[plot_df[hue_col] == group].copy()
+                # Sort each group individually to ensure proper connection
+                group_df = group_df.sort_values(by=x_col)
+                plt.plot(group_df[x_col], group_df[y_col], marker='o', linewidth=2, markersize=6, label=str(group))
             plt.legend(title=hue_col, bbox_to_anchor=(1.05, 1), loc='upper left')
         else:
-            plt.plot(df[x_col], df[y_col], marker='o', linewidth=2, markersize=6)
+            plt.plot(plot_df[x_col], plot_df[y_col], marker='o', linewidth=2, markersize=6)
+        
         plt.xticks(rotation=45, ha='right')
         plt.title(title or f"{y_col} Trend")
         plt.xlabel(x_col)

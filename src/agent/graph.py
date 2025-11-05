@@ -191,10 +191,16 @@ class OrionGraph:
             sys.stdout.flush()
             return "output"
         
-        # Case 3: Empty results - generate insight explanation
+        # Case 3: Empty results - retry if under limit, otherwise explain
         if has_empty_results:
-            sys.stdout.flush()
-            return "insight_generator"
+            if retry_count < 3:
+                # Retry to fix the query
+                sys.stdout.flush()
+                return "query_builder"
+            else:
+                # Retry limit reached - explain why no results
+                sys.stdout.flush()
+                return "insight_generator"
         
         # Case 4: Success with data - analyze it
         sys.stdout.flush()

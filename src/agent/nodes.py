@@ -379,6 +379,57 @@ Fixed SQL Query:
 
 """)
 
+    EMPTY_RESULTS_RETRY_PROMPT = dedent("""
+You are a SQL expert. Your previous query executed successfully but returned 0 rows. This suggests the query logic or filter values may be incorrect.
+
+{schema}
+
+Original user query: {user_query}
+
+Previous SQL query (returned 0 rows):
+{previous_sql}
+
+{discovery_context}
+
+This is retry attempt {retry_count} of 3. The query ran without errors but returned no data.
+
+Empty results almost always mean WRONG FILTER VALUES, not wrong query structure.
+
+STEP 1 - ANALYZE THE PREVIOUS SQL:
+Look at the WHERE clause. Does it filter by categorical values like:
+- gender (common mistake: 'female'/'male' vs 'F'/'M')
+- country (common mistake: 'US' vs 'United States')
+- status (common mistake: 'completed' vs 'Complete')
+- product names, categories, etc.
+
+STEP 2 - DECIDE:
+If the previous SQL uses ANY categorical filters (gender, country, status, category, name matches, etc.):
+→ You MUST use DISCOVER to check actual values in the database
+→ Example: "DISCOVER: SELECT DISTINCT gender FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20"
+
+If the query only uses numeric/date filters with no categorical values:
+→ You can try fixing the SQL directly (broaden date range, adjust logic)
+
+COMMON MISTAKES IN PREVIOUS SQL:
+gender = 'female' or 'Female' → needs to be 'F' or 'M' (use DISCOVER to check!)
+country = 'US' → Could be 'United States' (use DISCOVER to check!)
+status = 'completed' → Could be 'Complete' or 'Shipped' (use DISCOVER to check!)
+Exact string matches → Database values might have different casing/spelling
+
+{SQL_RULES}
+
+Respond in one of two ways:
+1. If you need to discover actual data values: "DISCOVER: <query>"
+2. If you can fix the query directly: "SQL: <corrected query>"
+
+CRITICAL: Your response MUST start with either "DISCOVER:" or "SQL:" - no other text before it!
+
+Take a deep breath and think step-by-step to generate the correct query.
+
+Your response:
+
+""")
+
 
     RATE_LIMIT_BACKOFF = (15, 45)
 
@@ -402,8 +453,9 @@ Fixed SQL Query:
         retry_count = state.get("retry_count", 0)
         user_query = state.get("user_query", "")
         
-        # Check if this is a retry after a BigQuery error
+        # Check if this is a retry after a BigQuery error or empty results
         query_error = state.get("query_error")
+        has_empty_results = state.get("has_empty_results", False)
         previous_sql = state.get("sql_query", "")
         
         try:
@@ -421,7 +473,8 @@ Fixed SQL Query:
         error_history = state.get("error_history", []) or []
         
         # CRITICAL: Check retry limit BEFORE attempting retry
-        if query_error and previous_sql:
+        # Handle both query errors and empty results
+        if (query_error or has_empty_results) and previous_sql:
             
             # Check limit BEFORE incrementing
             if retry_count >= 3:
@@ -442,15 +495,33 @@ Fixed SQL Query:
             # Build error context from history for better self-healing
             error_context = "\n".join([f"- Attempt {i+1}: {err}" for i, err in enumerate(error_history)])
             
-            # This is a retry - use the retry prompt template
-            prompt = self.RETRY_PROMPT.format(
-                schema=context,
-                user_query=user_query,
-                previous_sql=previous_sql,
-                error_history=error_context,
-                retry_count=retry_count,
-                SQL_RULES=self.SQL_RULES
-            )
+            # Choose the appropriate retry prompt based on the failure type
+            if has_empty_results:
+                # Use empty results retry prompt - more focused on filter values and logic
+                # Add discovery results if available
+                conversation_history = state.get("conversation_history", []) or []
+                discovery_context = ""
+                if discovery_result:
+                    discovery_context = f"\n\nDISCOVERY RESULTS from previous attempt:\n{discovery_result}\n\nUse this information to inform your corrected query.\n"
+                
+                prompt = self.EMPTY_RESULTS_RETRY_PROMPT.format(
+                    schema=context,
+                    user_query=user_query,
+                    previous_sql=previous_sql,
+                    discovery_context=discovery_context,
+                    retry_count=retry_count,
+                    SQL_RULES=self.SQL_RULES
+                )
+            else:
+                # Use regular error retry prompt
+                prompt = self.RETRY_PROMPT.format(
+                    schema=context,
+                    user_query=user_query,
+                    previous_sql=previous_sql,
+                    error_history=error_context,
+                    retry_count=retry_count,
+                    SQL_RULES=self.SQL_RULES
+                )
         else:
             # Initial query - determine if it's a meta-question or requires SQL
             
@@ -597,7 +668,10 @@ Fixed SQL Query:
                     return {
                         "discovery_query": discovery_query,
                         "discovery_result": None,  # Clear old discovery result when starting new discovery
-                        "discovery_count": discovery_count + 1  # Track discovery count
+                        "discovery_count": discovery_count + 1,  # Track discovery count
+                        "retry_count": retry_count,  # Preserve retry count through discovery
+                        "has_empty_results": False,  # Clear empty results flag during discovery
+                        "sql_query": previous_sql  # Preserve the SQL that returned empty results
                     }
             
             # Check if this is a SQL question response
@@ -757,6 +831,7 @@ Fixed SQL Query:
                 "discovery_query": None,  # Clear any leftover discovery query
                 "discovery_count": 0,  # Reset discovery count after successful SQL generation
                 "query_error": None,  # Clear any previous errors
+                "has_empty_results": False,  # Clear empty results flag for new query attempt
                 "retry_count": retry_count,  # Use the incremented retry_count (was incremented in retry branch if this was a retry)
                 "error_history": error_history  # Preserve error history
             }
@@ -885,7 +960,9 @@ class BigQueryExecutorNode:
                 return {
                     "discovery_result": discovery_result,
                     "discovery_query": None,  # CRITICAL: Clear discovery query after execution
-                    "query_error": None
+                    "query_error": None,
+                    "retry_count": state.get("retry_count", 0),  # Preserve retry count through discovery
+                    "has_empty_results": False  # Clear empty results flag during discovery
                 }
             
             # Regular SQL query results
@@ -991,10 +1068,22 @@ class ResultCheckNode:
         
         # Case 2: Check for empty results (successful query but no data)
         if query_result is not None and len(query_result) == 0:
-            return {
-                "has_empty_results": True,
-                "error_history": error_history
-            }
+            # Treat empty results like an error - retry if under limit
+            if retry_count < 3:
+                if state.get("_verbose"):
+                    print(OutputFormatter.warning(f"  → Empty results detected (attempting retry {retry_count + 1}/3): Query returned 0 rows"))
+                    sys.stdout.flush()
+                return {
+                    "has_empty_results": True,  # Flag for retry prompt
+                    "error_history": error_history,
+                    # Don't increment retry_count here - QueryBuilderNode will handle it
+                }
+            else:
+                # Retry limit reached - proceed to output with explanation
+                return {
+                    "has_empty_results": True,
+                    "error_history": error_history
+                }
         
         # Case 3: Success with data
         return {
