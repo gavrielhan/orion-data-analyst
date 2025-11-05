@@ -40,6 +40,9 @@ class ContextNode:
     @classmethod
     def execute(cls, state: AgentState) -> Dict[str, Any]:
         """Load schema and conversation context."""
+        import sys
+        print("Visiting ContextNode")
+        sys.stdout.flush()
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
@@ -76,6 +79,9 @@ class ApprovalNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Check if query requires user approval."""
+        import sys
+        print("Visiting ApprovalNode")
+        sys.stdout.flush()
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
@@ -111,6 +117,9 @@ class ValidationNode:
     @classmethod
     def execute(cls, state: AgentState) -> Dict[str, Any]:
         """Validate SQL query."""
+        import sys
+        print("Visiting ValidationNode")
+        sys.stdout.flush()
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
@@ -127,19 +136,27 @@ class ValidationNode:
         # Safety check: ensure this isn't a META response that slipped through
         sql_upper = sql_query.upper().strip()
         if sql_upper.startswith("META:") or sql_upper.startswith("SQL:"):
+            # CRITICAL: Don't increment retry_count here - QueryBuilderNode handles it
+            # Just preserve the current retry_count
+            current_retry_count = state.get("retry_count", 0)
             return {
                 "validation_passed": False,
                 "query_error": "Invalid SQL: Response prefix detected. Please retry.",
-                "retry_count": state.get("retry_count", 0) + 1
+                "retry_count": current_retry_count,  # Preserve, don't increment - QueryBuilderNode handles it
+                "sql_query": sql_query  # Preserve SQL query for retry
             }
         
         # Security check: Block dangerous operations
         sql_upper = sql_query.upper()
         for keyword in cls.BLOCKED_KEYWORDS:
             if re.search(rf'\b{keyword}\b', sql_upper):
+                # CRITICAL: Preserve retry_count - QueryBuilderNode handles incrementing
+                current_retry_count = state.get("retry_count", 0)
                 return {
                     "validation_passed": False,
-                    "query_error": f"Security violation: {keyword} operations are not allowed"
+                    "query_error": f"Security violation: {keyword} operations are not allowed",
+                    "sql_query": sql_query,  # Preserve SQL query for retry
+                    "retry_count": current_retry_count  # Preserve retry_count
                 }
         
         # Note: We no longer enforce LIMIT - queries can run without forced limits
@@ -156,10 +173,14 @@ class ValidationNode:
             gb_processed = bytes_processed / (1024 ** 3)
             
             if gb_processed > cls.MAX_COST_GB:
+                # CRITICAL: Preserve retry_count - QueryBuilderNode handles incrementing
+                current_retry_count = state.get("retry_count", 0)
                 return {
                     "validation_passed": False,
                     "estimated_cost_gb": gb_processed,
-                    "query_error": f"Query too expensive: {gb_processed:.2f}GB (max: {cls.MAX_COST_GB}GB)"
+                    "query_error": f"Query too expensive: {gb_processed:.2f}GB (max: {cls.MAX_COST_GB}GB)",
+                    "sql_query": sql_query,  # Preserve SQL query for retry
+                    "retry_count": current_retry_count  # Preserve retry_count
                 }
             
             return {
@@ -169,9 +190,13 @@ class ValidationNode:
             }
             
         except Exception as e:
+            # CRITICAL: Preserve retry_count so retries can be tracked properly
+            current_retry_count = state.get("retry_count", 0)
             return {
                 "validation_passed": False,
-                "query_error": f"Validation error: {str(e)}"
+                "query_error": f"Validation error: {str(e)}",
+                "sql_query": sql_query,  # Preserve SQL query for retry - QueryBuilderNode needs it
+                "retry_count": current_retry_count  # Preserve retry_count - don't reset it
             }
 
 class InputNode:
@@ -189,6 +214,9 @@ class InputNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Process user input and classify intent."""
+        import sys
+        print("Visiting InputNode")
+        sys.stdout.flush()
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
@@ -287,11 +315,22 @@ Rules:
         from src.utils.formatter import OutputFormatter
         import sys
         
+        print("Visiting QueryBuilderNode")
+        sys.stdout.flush()
+        
         # Extract state
         discovery_result = state.get("discovery_result")
         retry_count = state.get("retry_count", 0)
         user_query = state.get("user_query", "")
-        context = ContextNode.get_schema_context()
+        
+        # Check if this is a retry after a BigQuery error
+        query_error = state.get("query_error")
+        previous_sql = state.get("sql_query", "")
+        
+        try:
+            context = ContextNode.get_schema_context()
+        except Exception as e:
+            raise
         
         # Progress indicator (verbose only)
         if state.get("_verbose"):
@@ -299,13 +338,28 @@ Rules:
             print(OutputFormatter.info(f"  → {status}..."))
             sys.stdout.flush()
         
-        # Check if this is a retry after a BigQuery error
-        query_error = state.get("query_error")
-        previous_sql = state.get("sql_query", "")
-        retry_count = state.get("retry_count", 0)
+        # Check if this is a retry after a BigQuery error (already extracted above)
         error_history = state.get("error_history", []) or []
         
+        # CRITICAL: Check retry limit BEFORE attempting retry
         if query_error and previous_sql:
+            
+            # Check limit BEFORE incrementing
+            if retry_count >= 3:
+                return {
+                    "query_error": f"Query failed after {retry_count} retry attempts. Original error: {query_error[:200]}",
+                    "retry_count": retry_count,
+                    "sql_query": previous_sql  # Preserve the last SQL
+                }
+            
+            # This is a retry - increment retry_count now that we're actually attempting a retry
+            # Store this incremented value so we can use it in error returns
+            retry_count = retry_count + 1
+            
+            # Add current error to history if not already there
+            if query_error and query_error not in error_history:
+                error_history.append(query_error)
+            
             # Build error context from history for better self-healing
             error_context = "\n".join([f"- Attempt {i+1}: {err}" for i, err in enumerate(error_history)])
             
@@ -323,7 +377,7 @@ Previous SQL query that failed:
 Error history (most recent last):
 {error_context}
 
-This is retry attempt {retry_count + 1} of 3. Carefully analyze the error pattern and generate a corrected query.
+This is retry attempt {retry_count} of 3. Carefully analyze the error pattern and generate a corrected query.
 
 CRITICAL RULES:
 - Fix the SQL query based on the error message above
@@ -350,6 +404,34 @@ CRITICAL RULES:
 - Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
 - Use clear column aliases
 
+🚨 CRITICAL: DATE/TIME TYPE HANDLING - READ THIS FIRST IF ERROR MENTIONS TIMESTAMP/DATE! 🚨
+
+1. TIMESTAMP_SUB vs DATE_SUB:
+   - ERROR: "TIMESTAMP_SUB does not support the MONTH date part"
+   - CAUSE: You used TIMESTAMP_SUB with MONTH/YEAR interval - BigQuery doesn't support this!
+   - WRONG: WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 MONTH)
+   - CORRECT: WHERE created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
+   - RULE: For MONTH/YEAR intervals, ALWAYS use DATE_SUB, then wrap in TIMESTAMP() if comparing with TIMESTAMP column
+   - For DAY intervals with timestamps, you CAN use TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
+
+2. Type Matching:
+   - ERROR: "No matching signature for operator >= for argument types: TIMESTAMP, DATE"
+   - CAUSE: You're comparing TIMESTAMP column (e.g., created_at) with DATE value
+   - SOLUTION: Wrap DATE in TIMESTAMP() function: TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR))
+   - Example: WHERE o.created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
+   - Example: WHERE o.created_at >= TIMESTAMP('2024-01-01')
+
+3. Common Patterns:
+   - NEVER: WHERE created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH)
+   - ALWAYS: WHERE created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
+   - NEVER: TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 MONTH)
+   - ALWAYS: TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 24 MONTH))
+
+4. Quick Reference:
+   - Use DATE_SUB for: MONTH, YEAR intervals
+   - Use TIMESTAMP_SUB for: DAY, HOUR, MINUTE, SECOND intervals (when working with timestamps)
+   - created_at columns are TIMESTAMP type - cast DATE values to TIMESTAMP using TIMESTAMP()
+
 REVENUE/SALES QUERY BEST PRACTICES (if query involves revenue/sales):
 - ALWAYS filter order_items.status = 'Complete' when calculating revenue - only completed orders count
 - Join order_items → orders → users for geographical filters (country, state, city)
@@ -375,6 +457,7 @@ Fixed SQL Query:
 """
         else:
             # Initial query - determine if it's a meta-question or requires SQL
+            
             # Check if this is a retry due to missing prefix
             retry_instruction = ""
             if retry_count > 0:
@@ -543,6 +626,7 @@ Your response (MUST start with META: or SQL:):
 """
         
         try:
+            
             # Rate limiting to prevent API quota exhaustion
             status = self.rate_limiter.get_status()
             if state.get("_verbose"):
@@ -560,23 +644,29 @@ Your response (MUST start with META: or SQL:):
             
             # Handle potential None or empty response
             if not response or not hasattr(response, 'text'):
+                # CRITICAL: Preserve existing sql_query if it exists
+                existing_sql = state.get("sql_query", "")
                 return {
                     "query_error": "No response from Gemini. Please check your API key.",
-                    "retry_count": state.get("retry_count", 0) + 1
+                    "retry_count": state.get("retry_count", 0) + 1,
+                    "sql_query": existing_sql  # ALWAYS preserve existing SQL query
                 }
             
             response_text = response.text.strip()
             
             # Check for empty response
             if not response_text:
+                # CRITICAL: Preserve existing sql_query if it exists
+                existing_sql = state.get("sql_query", "")
                 return {
                     "query_error": "Gemini returned an empty response. Please rephrase your question.",
-                    "retry_count": state.get("retry_count", 0) + 1
+                    "retry_count": state.get("retry_count", 0) + 1,
+                    "sql_query": existing_sql  # ALWAYS preserve existing SQL query
                 }
             
             # Normalize response for checking
             response_upper = response_text.upper()
-            retry_count = state.get("retry_count", 0)
+            # NOTE: Don't re-read retry_count from state here - we may have incremented it locally in the retry branch!
             
             # Check if this is a META question response (only for initial queries, not retries)
             if not query_error:
@@ -618,9 +708,12 @@ Your response (MUST start with META: or SQL:):
                 discovery_result = state.get("discovery_result")
                 if discovery_result:
                     # Discovery already done - LLM should use it, not generate another
+                    # CRITICAL: Preserve existing sql_query if it exists
+                    existing_sql = state.get("sql_query", "")
                     return {
                         "query_error": "Discovery already completed. Please generate SQL using the discovery results provided above.",
-                        "retry_count": state.get("retry_count", 0) + 1
+                        "retry_count": state.get("retry_count", 0) + 1,
+                        "sql_query": existing_sql  # ALWAYS preserve existing SQL query
                     }
                 
                 discovery_query = response_text[9:].strip()
@@ -629,9 +722,12 @@ Your response (MUST start with META: or SQL:):
                     discovery_count = state.get("discovery_count", 0)
                     if discovery_count >= 2:
                         # Too many discovery queries - force SQL generation
+                        # CRITICAL: Preserve existing sql_query if it exists
+                        existing_sql = state.get("sql_query", "")
                         return {
                             "query_error": "Too many discovery queries. Please generate SQL directly using available schema information.",
-                            "retry_count": state.get("retry_count", 0) + 1
+                            "retry_count": state.get("retry_count", 0) + 1,
+                            "sql_query": existing_sql  # ALWAYS preserve existing SQL query
                         }
                     return {
                         "discovery_query": discovery_query,
@@ -643,15 +739,20 @@ Your response (MUST start with META: or SQL:):
             if response_upper.startswith("SQL:"):
                 # Extract the SQL query (remove "SQL:" prefix)
                 sql_query = response_text[4:].strip()
+                
+                
             else:
                 # Check if response lacks both META: and SQL: prefixes
                 # Only check this for initial queries (not retries after BigQuery errors)
                 if not query_error and not response_upper.startswith("META:") and not response_upper.startswith("SQL:"):
                     # If no prefix and we haven't exceeded max retries, retry with clearer instruction
                     if retry_count < 3:
+                        # CRITICAL: Preserve existing sql_query if it exists
+                        existing_sql = state.get("sql_query", "")
                         return {
                             "query_error": f"Invalid response format: Response must start with 'META:' or 'SQL:'. Please try again with proper format.",
-                            "retry_count": retry_count + 1
+                            "retry_count": retry_count + 1,
+                            "sql_query": existing_sql  # ALWAYS preserve existing SQL query
                         }
                     else:
                         # Max retries exceeded, assume it's SQL and try to process it
@@ -774,26 +875,40 @@ Your response (MUST start with META: or SQL:):
                 # Check if it references table names without the full path
                 if any(re.search(rf'\b{table}\b', sql_lower) for table in ["order_items", "orders", "products", "users"]):
                     # If we see table names but not the full path, this is likely an error
+                    # CRITICAL: Preserve the existing sql_query from state (for retries)
+                    existing_sql = state.get("sql_query", "")
                     return {
                         "query_error": f"Invalid SQL generated: Query must use full table paths starting with 'bigquery-public-data.thelook_ecommerce.'. Generated query: {sql_query[:200]}",
-                        "retry_count": state.get("retry_count", 0) + 1
+                        "retry_count": state.get("retry_count", 0) + 1,
+                        "sql_query": existing_sql if existing_sql else sql_query  # Preserve existing, or use new if none exists
                     }
-            return {
+            # Note: We removed the "identical SQL" check - let validation handle SQL errors
+            # If the model generates identical SQL, validation will fail again and retry_count will increment
+            # After 3 retries, the routing logic will stop retrying
+            
+            result = {
                 "sql_query": sql_query,
                 "discovery_result": None,  # Clear discovery result after using it
                 "discovery_query": None,  # Clear any leftover discovery query
                 "discovery_count": 0,  # Reset discovery count after successful SQL generation
-                "query_error": None  # Clear any previous errors
+                "query_error": None,  # Clear any previous errors
+                "retry_count": retry_count,  # Use the incremented retry_count (was incremented in retry branch if this was a retry)
+                "error_history": error_history  # Preserve error history
             }
+            
+            return result
         except Exception as e:
             error_str = str(e)
             retry_count = state.get("retry_count", 0)
             
             # API key errors
             if "API_KEY" in error_str or "API key" in error_str or "INVALID_ARGUMENT" in error_str:
+                # CRITICAL: Preserve existing sql_query if it exists
+                existing_sql = state.get("sql_query", "")
                 return {
                     'query_error': 'Rate limit exceeded. Retrying...',
                     'retry_count': retry_count + 1,
+                    'sql_query': existing_sql  # ALWAYS preserve existing SQL query
                 }
             
             # Check for rate limit errors (429)
@@ -823,15 +938,21 @@ Your response (MUST start with META: or SQL:):
                     self.rate_limiter.reset()
                     print(f"⏱️  Rate limiter reset - quota exhausted. Please wait 60 seconds.")
                 
+                # CRITICAL: Preserve existing sql_query if it exists
+                existing_sql = state.get("sql_query", "")
                 return {
                     "query_error": "⚠️ Rate limit exceeded. Gemini API quota exhausted.\n   Waited 60 seconds for quota reset. Please try again now.\n   If still failing, wait another 60 seconds or check if other apps are using your API key.",
-                    "retry_count": retry_count  # Don't increment - we're not retrying
+                    "retry_count": retry_count,  # Don't increment - we're not retrying
+                    "sql_query": existing_sql  # ALWAYS preserve existing SQL query
                 }
             
             # Other errors
+            # CRITICAL: Preserve existing sql_query if it exists
+            existing_sql = state.get("sql_query", "")
             return {
                 'query_error': '⚠️ Gemini rate limit reached. Please wait a minute before retrying.',
                 'retry_count': retry_count,
+                'sql_query': existing_sql  # ALWAYS preserve existing SQL query
             }
 
 class BigQueryExecutorNode:
@@ -840,8 +961,10 @@ class BigQueryExecutorNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Execute SQL query or discovery query and return results."""
-        from src.utils.formatter import OutputFormatter
         import sys
+        print("Visiting BigQueryExecutorNode")
+        sys.stdout.flush()
+        from src.utils.formatter import OutputFormatter
         
         # Check if this is a discovery query
         discovery_query = state.get("discovery_query", "")
@@ -933,7 +1056,8 @@ class BigQueryExecutorNode:
             return {
                 "query_error": error_msg,
                 "query_result": None,
-                "retry_count": state.get("retry_count", 0) + 1
+                # NOTE: Don't increment retry_count here - it gets incremented in QueryBuilderNode when actually retrying
+                # retry_count represents "how many retries have been attempted", not "how many errors occurred"
             }
     
     @staticmethod
@@ -966,8 +1090,10 @@ class ResultCheckNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Analyze execution results and set routing flags."""
-        from src.utils.formatter import OutputFormatter
         import sys
+        print("Visiting ResultCheckNode")
+        sys.stdout.flush()
+        from src.utils.formatter import OutputFormatter
         
         query_error = state.get("query_error")
         query_result = state.get("query_result")
@@ -988,12 +1114,14 @@ class ResultCheckNode:
         if query_error and retry_count < 3:
             if state.get("_verbose"):
                 import sys
-                print(OutputFormatter.warning(f"  → Query error detected (retry {retry_count + 1}/3): {query_error[:100]}"))
+                # retry_count represents attempts so far, so next attempt is retry_count + 1
+                print(OutputFormatter.warning(f"  → Query error detected (attempting retry {retry_count + 1}/3): {query_error[:100]}"))
                 sys.stdout.flush()
             return {
                 "error_history": error_history,
                 "has_empty_results": False,
-                "retry_count": retry_count + 1  # CRITICAL: Increment retry count to prevent infinite loops
+                # NOTE: Don't increment retry_count here - it gets incremented in QueryBuilderNode when actually attempting a retry
+                # retry_count represents "how many retries have been attempted", not "how many errors occurred"
             }
         
         # Case 2: Check for empty results (successful query but no data)
@@ -1018,6 +1146,9 @@ class AnalysisNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Analyze data based on query intent."""
+        import sys
+        print("Visiting AnalysisNode")
+        sys.stdout.flush()
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
@@ -1286,6 +1417,9 @@ class InsightGeneratorNode:
     
     def execute(self, state: AgentState) -> Dict[str, Any]:
         """Generate insights from empty results or data analysis."""
+        import sys
+        print("Visiting InsightGeneratorNode")
+        sys.stdout.flush()
         from src.utils.formatter import OutputFormatter
         
         # Progress indicator
@@ -1490,6 +1624,9 @@ class OutputNode:
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Format output for display with analysis insights."""
+        import sys
+        print("Visiting OutputNode")
+        sys.stdout.flush()
         # Clear progress indicator line
         if state.get("_verbose"):
             print(" " * 80, end="\r")  # Clear the line

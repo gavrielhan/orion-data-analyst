@@ -92,12 +92,12 @@ class OrionGraph:
                     sys.stdout.flush()
                     return "output"
                 
-                # Only retry for format errors (not rate limits)
+                # Retry for format errors OR validation errors (from validation node)
                 should_retry = (
-                    "Invalid response format" in query_error and retry_count < 3
+                    ("Invalid response format" in query_error or "Validation error" in query_error) 
+                    and retry_count < 3
                 )
                 if should_retry:
-                    sys.stdout.flush()
                     return "query_builder"
                 sys.stdout.flush()
                 return "output"
@@ -107,15 +107,26 @@ class OrionGraph:
         return "validation"
     
     def _route_from_validation(self, state: AgentState) -> str:
-        """Route from validation - check approval if passed, output if failed."""
+        """Route from validation - check approval if passed, retry if failed and under limit."""
+        import sys
         # Absolute terminator: if final_output is set, always go to output
         if state.get("final_output"):
             return "output"
         
         validation_passed = state.get("validation_passed", False)
         query_error = state.get("query_error")
+        retry_count = state.get("retry_count", 0)
         
-        if query_error or not validation_passed:
+        # If validation failed with an error, check if we should retry
+        if query_error:
+            if retry_count < 3:
+                return "query_builder"  # Retry the query generation
+            else:
+                # Retry limit reached - stop retrying
+                return "output"
+        
+        # If validation failed but no error (other failure)
+        if not validation_passed:
             return "output"
         
         return "approval"
@@ -236,7 +247,8 @@ class OrionGraph:
             self._route_from_validation,
             {
                 "approval": "approval",
-                "output": "output"
+                "output": "output",
+                "query_builder": "query_builder"  # Retry on validation errors
             }
         )
         # Approval always proceeds to executor (CLI handles user confirmation)
