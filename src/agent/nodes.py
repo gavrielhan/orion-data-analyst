@@ -5,6 +5,7 @@ import re
 import json
 import time
 from pathlib import Path
+from textwrap import dedent
 from typing import Dict, Any
 from datetime import datetime
 import google.generativeai as genai
@@ -282,557 +283,240 @@ class InputNode:
 
 
 class QueryBuilderNode:
-    """Generates SQL query using Gemini API with rate limiting."""
-    
+    """Generate SQL or meta answers with Gemini while minimising token-heavy prompts."""
+
+    MAIN_PROMPT = dedent(
+        """
+        You are Orion, an analyst for the dataset `bigquery-public-data.thelook_ecommerce`.
+        Use only these tables: orders, order_items, products, users.
+        Always reference tables exactly as `bigquery-public-data.thelook_ecommerce.<table>` and include LIMIT 100 unless the user provides another limit.
+        Respond with either:
+          • `META: <concise answer>` for questions about the assistant or available data.
+          • `SQL: <query>` for runnable Standard SQL.
+        Never add prose before the prefix.
+        {schema}
+
+        User request: {user_query}
+        {history}
+        {discovery}
+        {retry_hint}
+        """
+    )
+
+    RETRY_PROMPT = dedent(
+        """
+        The previous SQL failed on BigQuery. Study the error log and return a corrected query.
+        {schema}
+
+        Original request: {user_query}
+        Previous SQL:
+        {previous_sql}
+
+        Error history:
+        {error_log}
+
+        Return only `SQL: <query>` with fixes applied.
+        """
+    )
+
+    RATE_LIMIT_BACKOFF = (15, 45)
+
     def __init__(self):
-        # Initialize Gemini API
         genai.configure(api_key=config.gemini_api_key)
-        # Use configured Gemini model (default: gemini-2.0-flash-exp)
         self.model = genai.GenerativeModel(config.gemini_model)
-        
-        # Use shared global rate limiter for all Gemini API calls
         from src.utils.rate_limiter import get_global_rate_limiter
+
         self.rate_limiter = get_global_rate_limiter()
-        
+        self._schema_context = self._load_schema_context()
+        self._cache: Dict[str, str] = {}
+
     def _load_schema_context(self) -> str:
-        """Load schema context from saved schema file or fallback to hardcoded."""
-        # Try to load from schema_context.txt file
-        schema_file = Path(__file__).parent.parent.parent / "schema_context.txt"
-        
+        schema_file = Path(__file__).parent.parent.parent / 'schema_context.txt'
         if schema_file.exists():
             try:
-                with open(schema_file, 'r') as f:
-                    return f.read()
-            except Exception as e:
-                # Fallback to hardcoded schema if file can't be read
-                print(f"Warning: Could not load schema file: {e}")
-        
-        # Fallback: Try to load from JSON and format it
-        schema_json = Path(__file__).parent.parent.parent / "schemas.json"
+                return schema_file.read_text()
+            except Exception:
+                pass
+
+        schema_json = Path(__file__).parent.parent.parent / 'schemas.json'
         if schema_json.exists():
             try:
-                with open(schema_json, 'r') as f:
-                    schemas = json.load(f)
-                return self._format_schema_from_json(schemas)
-            except Exception as e:
-                print(f"Warning: Could not load schema JSON: {e}")
-        
-        # Final fallback to hardcoded schema
-        return self._get_hardcoded_schema()
-    
-    def _format_schema_from_json(self, schemas: dict) -> str:
-        """Format schema information from JSON for LLM context."""
-        context_parts = [
-            "CRITICAL: You can ONLY query these 4 tables in bigquery-public-data.thelook_ecommerce:\n"
-        ]
-        
-        table_descriptions = {
-            "orders": "customer orders with timestamps, status, and number of items",
-            "order_items": "products within each order, including price and cost",
-            "products": "catalog metadata like category, brand, and pricing",
-            "users": "customer demographics like age, gender, and location"
-        }
-        
-        for i, (table_name, schema) in enumerate(schemas.items(), 1):
-            desc = table_descriptions.get(table_name, schema.get("description", ""))
-            context_parts.append(f"{i}. {table_name} - {desc}")
-            
-            # Add column information
-            columns = schema.get("columns", [])
-            if columns:
-                col_list = ", ".join([col["name"] for col in columns])
-                context_parts.append(f"\n   Columns: {col_list}")
-                
-                # Add detailed column info with types
-                context_parts.append(f"\n   Column details:")
-                for col in columns:
-                    col_type = col.get("field_type", "")
-                    col_mode = col.get("mode", "NULLABLE")
-                    col_desc = col.get("description", "")
-                    detail = f"   - {col['name']} ({col_type}"
-                    if col_mode != "NULLABLE":
-                        detail += f", {col_mode}"
-                    detail += ")"
-                    if col_desc:
-                        detail += f" - {col_desc}"
-                    context_parts.append(detail)
-            context_parts.append("")
-        
-        # Add join information
-        context_parts.append("Important joins:")
-        context_parts.append("- orders.user_id = users.id")
-        context_parts.append("- orders.order_id = order_items.order_id")
-        context_parts.append("- order_items.product_id = products.id")
-        context_parts.append("")
-        
-        context_parts.append(
-            "SECURITY: If the query references any other dataset or table that is NOT one of these 4 tables above, "
-            "respond with: \"I can only answer questions about orders, order_items, products, and users data. "
-            "Please clarify which dataset you're interested in.\""
-        )
-        context_parts.append("")
-        context_parts.append("Generate clean, valid SQL queries only.")
-        
-        return "\n".join(context_parts)
-    
-    def _get_hardcoded_schema(self) -> str:
-        """Fallback hardcoded schema context."""
-        return """
-CRITICAL: You can ONLY query these 4 tables in bigquery-public-data.thelook_ecommerce:
+                schemas = json.loads(schema_json.read_text())
+                return self._format_schema(schemas)
+            except Exception:
+                pass
 
-1. orders - customer orders with timestamps, status, and number of items
-2. order_items - products within each order, including price and cost
-3. products - catalog metadata like category, brand, and pricing
-4. users - customer demographics like age, gender, and location
+        return dedent(
+            """
+            Tables: orders, order_items, products, users from `bigquery-public-data.thelook_ecommerce`.
+            Key joins: orders.user_id = users.id, orders.order_id = order_items.order_id, order_items.product_id = products.id.
+            """
+        ).strip()
 
-Available tables in bigquery-public-data.thelook_ecommerce:
+    def _format_schema(self, schemas: dict) -> str:
+        lines = ['Columns by table:']
+        for table, meta in schemas.items():
+            cols = ', '.join(col['name'] for col in meta.get('columns', []))
+            if cols:
+                lines.append(f'- {table}: {cols}')
+        return '\n'.join(lines)
 
-1. orders (order_id, user_id, status, created_at, returned_at, shipped_at, delivered_at, num_of_item)
-2. order_items (order_id, id, product_id, inventory_item_id, status, created_at, shipped_at, delivered_at, returned_at, sale_price, cost, sku)
-3. products (id, cost, category, name, brand, retail_price, department, sku, distribution_center_id)
-4. users (id, first_name, last_name, email, age, gender, state, street_address, postal_code, city, country, latitude, longitude, traffic_source, created_at)
+    def _cache_key(self, state: AgentState) -> str | None:
+        if state.get('query_error') or state.get('discovery_result') or state.get('conversation_history'):
+            return None
+        user_query = (state.get('user_query') or '').strip().lower()
+        return user_query or None
 
-Important joins:
-- orders.user_id = users.id
-- orders.order_id = order_items.order_id
-- order_items.product_id = products.id
-
-SECURITY: If the query references any other dataset or table that is NOT one of these 4 tables above, 
-respond with: "I can only answer questions about orders, order_items, products, and users data. 
-Please clarify which dataset you're interested in."
-
-Generate clean, valid SQL queries only.
-"""
-    
-    def _get_schema_context(self) -> str:
-        """Get schema context (loads from file or uses fallback)."""
-        return self._load_schema_context()
-    
     def execute(self, state: AgentState) -> Dict[str, Any]:
-        """Generate SQL query from user query or answer meta-question."""
         from src.utils.formatter import OutputFormatter
-        
-        # Progress indicator
-        if state.get("_verbose"):
-            discovery_result = state.get("discovery_result")
-            retry_count = state.get("retry_count", 0)
-            if discovery_result:
-                print(OutputFormatter.info("  → Generating SQL with discovered data..."), end="\r")
-            elif retry_count > 0:
-                print(OutputFormatter.info(f"  → Generating SQL (retry {retry_count})..."), end="\r")
-            else:
-                print(OutputFormatter.info("  → Analyzing query..."), end="\r")
-        
-        user_query = state.get("user_query", "")
-        context = self._get_schema_context()
-        
-        # Check if this is a retry after a BigQuery error
-        query_error = state.get("query_error")
-        previous_sql = state.get("sql_query", "")
-        retry_count = state.get("retry_count", 0)
-        error_history = state.get("error_history", []) or []
-        
-        if query_error and previous_sql:
-            # Build error context from history for better self-healing
-            error_context = "\n".join([f"- Attempt {i+1}: {err}" for i, err in enumerate(error_history)])
-            
-            # This is a retry - include full error context for self-healing
-            prompt = f"""
-You are a SQL expert. Previous SQL queries failed. Learn from these errors and fix the query.
 
-{context}
+        if state.get('_verbose'):
+            phase = 'retry' if state.get('retry_count') else 'analyzing'
+            if state.get('discovery_result'):
+                phase = 'discovery'
+            print(OutputFormatter.info(f'  → QueryBuilder: {phase}...'), end='\r')
 
-Original user query: {user_query}
+        cache_key = self._cache_key(state)
+        if cache_key and cache_key in self._cache:
+            return {'sql_query': self._cache[cache_key], 'discovery_result': None, 'query_error': None}
 
-Previous SQL query that failed:
-{previous_sql}
+        prompt = self._build_prompt(state)
 
-Error history (most recent last):
-{error_context}
-
-This is retry attempt {retry_count + 1} of 3. Carefully analyze the error pattern and generate a corrected query.
-
-CRITICAL RULES:
-- Fix the SQL query based on the error message above
-- Use standard SQL syntax for BigQuery
-- ALWAYS prefix ALL table names with the FULL path: 'bigquery-public-data.thelook_ecommerce.'
-- IMPORTANT: For BigQuery public datasets, use backticks around the ENTIRE path, not each part
-- Examples of CORRECT table references:
-  * `bigquery-public-data.thelook_ecommerce.order_items`
-  * `bigquery-public-data.thelook_ecommerce.orders`
-  * `bigquery-public-data.thelook_ecommerce.products`
-  * `bigquery-public-data.thelook_ecommerce.users`
-- When referencing columns, use the table alias or full path:
-  * oi.sale_price (if table is aliased as oi)
-  * `bigquery-public-data.thelook_ecommerce.order_items`.sale_price
-- Examples of INCORRECT (DO NOT USE):
-  * `bigquery-public-data`.`thelook_ecommerce`.`order_items` ❌ (separate backticks)
-  * bigquery-public-data.thelook_ecommerce.order_items ❌ (missing backticks)
-  * bigquery.order_items ❌
-  * thelook_ecommerce.order_items ❌
-- Always use LIMIT to restrict results (default 100 rows max)
-- Use clear column aliases
-- Return ONLY the fixed SQL query, no explanations
-
-Fixed SQL Query:
-"""
-        else:
-            # Initial query - determine if it's a meta-question or requires SQL
-            # Check if this is a retry due to missing prefix
-            retry_instruction = ""
-            if retry_count > 0:
-                retry_instruction = f"\n\n⚠️ ATTENTION: Previous response was invalid. Your response MUST start with either 'META:' or 'SQL:' - nothing else. This is attempt {retry_count + 1} of 3.\n"
-            
-            # Build conversation context for follow-up questions
-            conversation_history = state.get("conversation_history", []) or []
-            conv_context = ""
-            if conversation_history:
-                conv_context = "\n\nCONVERSATION HISTORY (for follow-up context):\n"
-                for i, entry in enumerate(conversation_history[-3:], 1):  # Last 3 only
-                    conv_context += f"{i}. User: {entry.get('query', 'N/A')}\n"
-                    result_summary = entry.get('result_summary', 'N/A')
-                    if len(result_summary) > 150:
-                        result_summary = result_summary[:150] + "..."
-                    conv_context += f"   Result: {result_summary}\n"
-            
-            # Add discovery results if available
-            discovery_result = state.get("discovery_result")
-            discovery_context = ""
-            if discovery_result:
-                discovery_context = f"\n\nDISCOVERY RESULTS:\nYou previously discovered these data values:\n{discovery_result}\n\nNow generate the main SQL query using this information.\n"
-            
-            prompt = f"""
-You are an intelligent data analysis assistant named Orion. Your role is to help users query and analyze e-commerce data.
-
-{context}
-{conv_context}
-{discovery_context}
-User query: {user_query}
-{retry_instruction}
-ANALYZE THE QUERY:
-Handle follow-up questions (e.g., "show the same for last quarter", "break that down by region") by referencing conversation history above.
-Pay attention to corrections/clarifications (e.g., "I think you're wrong, check again", "actually it's X not Y") - use these to fix previous errors.
-
-Carefully determine what the user is asking:
-- If they're asking about YOUR CAPABILITIES, WHAT datasets/tables/columns are AVAILABLE, or general HELP → This is a META question about you
-- If they're asking about ACTUAL DATA (specific values, records, numbers, calculations from the database) → This needs a SQL query
-
-DATA DISCOVERY APPROACH (USE THIS WHEN UNCERTAIN):
-If you're UNCERTAIN about data values (e.g., "how are genders encoded?", "what status values exist?"):
-1. First generate a DISCOVERY query to explore the data
-2. Use DISTINCT to find unique values in the relevant column
-3. Limit to 20 rows for fast results
-
-DISCOVERY QUERY FORMAT:
-When you need to discover data values, respond with "DISCOVER:" prefix:
-Example: "DISCOVER: SELECT DISTINCT gender FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
-
-After seeing discovery results, you'll be asked again to generate the main query using discovered information.
-
-EXAMPLES OF META QUESTIONS (answer directly, no SQL needed):
-- "which dataset can you query?"
-- "what tables are available?"
-- "what columns are in the orders table?"
-- "what can you do?"
-- "help"
-- "tell me about your capabilities"
-
-EXAMPLES OF SQL QUESTIONS:
-- "what is the most expensive product?" → Direct SQL
-- "how many orders were placed?" → Direct SQL
-- "show me the top 10 customers" → Direct SQL
-- "how many females are in orders?" → DISCOVER gender values first, then SQL
-- "what are the order statuses?" → DISCOVER status values first, then SQL
-
-RESPONSE FORMAT (CRITICAL - FOLLOW EXACTLY):
-You MUST respond in one of THREE formats. Your response MUST start with one of these prefixes:
-
-1. If META question (about capabilities/datasets/tables):
-   Response: "META: <your answer>"
-   Example: "META: I can query the bigquery-public-data.thelook_ecommerce dataset..."
-   
-2. If you need to DISCOVER data values first:
-   Response: "DISCOVER: <exploration query>"
-   Example: "DISCOVER: SELECT DISTINCT gender FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
-   
-3. If you have enough information for SQL:
-   Response: "SQL: <query>"
-   Example: "SQL: SELECT * FROM \`bigquery-public-data.thelook_ecommerce.orders\` LIMIT 10"
-
-CRITICAL: Your response MUST start with exactly "META:", "DISCOVER:", or "SQL:" - no other text before it!
-
-IMPORTANT: 
-- For META questions, provide a helpful answer directly - do NOT generate SQL
-- For SQL questions, provide ONLY the SQL query - no explanations or text before the SQL:
-
-CRITICAL SQL RULES (for SQL and DISCOVER queries):
-- Use standard SQL syntax for BigQuery
-- ALWAYS prefix ALL table names with the FULL path: 'bigquery-public-data.thelook_ecommerce.'
-- IMPORTANT: For BigQuery public datasets, use backticks around the ENTIRE path, not each part
-- Examples: `bigquery-public-data.thelook_ecommerce.order_items`
-- Always use LIMIT to restrict results (default 100 rows max)
-- Use clear column aliases
-
-Your response (MUST start with META: or SQL:):
-"""
-        
         try:
-            # Rate limiting to prevent API quota exhaustion
-            wait_time = self.rate_limiter.wait_if_needed()
-            
+            self.rate_limiter.wait_if_needed()
             response = self.model.generate_content(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=1000,
-                )
+                generation_config=genai.GenerationConfig(temperature=0.15, max_output_tokens=384),
             )
-            
-            # Handle potential None or empty response
-            if not response or not hasattr(response, 'text'):
-                return {
-                    "query_error": "No response from Gemini. Please check your API key.",
-                    "retry_count": state.get("retry_count", 0) + 1
-                }
-            
-            response_text = response.text.strip()
-            
-            # Check for empty response
-            if not response_text:
-                return {
-                    "query_error": "Gemini returned an empty response. Please rephrase your question.",
-                    "retry_count": state.get("retry_count", 0) + 1
-                }
-            
-            # Normalize response for checking
-            response_upper = response_text.upper()
-            retry_count = state.get("retry_count", 0)
-            
-            # Check if this is a META question response (only for initial queries, not retries)
-            if not query_error:
-                # Primary check: LLM explicitly marked it as META
-                if response_upper.startswith("META:"):
-                    # Extract the answer (remove "META:" prefix)
-                    meta_answer = response_text[5:].strip()
-                    if meta_answer:
-                        return {
-                            "final_output": meta_answer,
-                            "retry_count": 0  # Reset retry count on success
-                        }
-                
-                # Fallback check: If no prefix but response clearly looks like meta answer
-                # This handles cases where LLM forgot the prefix but gave a meta answer
-                looks_like_sql = any(keyword in response_upper for keyword in 
-                                   ["SELECT", "FROM", "WHERE", "JOIN", "GROUP BY", "ORDER BY", 
-                                    "LIMIT", "UNION", "`", "BIGQUERY-PUBLIC-DATA"])
-                
-                # More flexible meta keyword matching (handles plurals, variations)
-                meta_patterns = [
-                    "dataset", "datasets", "data set", "data sets",
-                    "table", "tables", "column", "columns",
-                    "available", "can query", "you can", "i can",
-                    "capabilities", "help", "assistant", "orion"
-                ]
-                looks_like_meta = any(pattern in response_upper for pattern in meta_patterns)
-                
-                # If it clearly looks like a meta answer (not SQL), treat it as meta
-                # Lower threshold for length (20 chars instead of 30) to catch shorter answers
-                if looks_like_meta and not looks_like_sql and len(response_text) > 20:
-                    return {
-                        "final_output": response_text,
-                        "retry_count": 0  # Reset retry count on success
-                    }
-            
-            # Check if this is a DISCOVERY query (needs to explore data first)
-            if response_upper.startswith("DISCOVER:"):
-                discovery_query = response_text[9:].strip()
-                if discovery_query:
-                    return {
-                        "discovery_query": discovery_query,
-                        "retry_count": 0  # Reset retry, we'll come back after discovery
-                    }
-            
-            # Check if this is a SQL question response
-            if response_upper.startswith("SQL:"):
-                # Extract the SQL query (remove "SQL:" prefix)
-                sql_query = response_text[4:].strip()
-            else:
-                # Check if response lacks both META: and SQL: prefixes
-                # Only check this for initial queries (not retries after BigQuery errors)
-                if not query_error and not response_upper.startswith("META:") and not response_upper.startswith("SQL:"):
-                    # If no prefix and we haven't exceeded max retries, retry with clearer instruction
-                    if retry_count < 3:
-                        return {
-                            "query_error": f"Invalid response format: Response must start with 'META:' or 'SQL:'. Please try again with proper format.",
-                            "retry_count": retry_count + 1
-                        }
-                    else:
-                        # Max retries exceeded, assume it's SQL and try to process it
-                        sql_query = response_text
-                else:
-                    # For retries after BigQuery errors or when already processed, assume it's SQL
-                    sql_query = response_text
-            
-            # Clean SQL - remove markdown code blocks if present
-            if sql_query.startswith("```sql"):
-                sql_query = sql_query[6:]
-            if sql_query.startswith("```"):
-                sql_query = sql_query[3:]
-            sql_query = sql_query.strip().rstrip("`")
-            
-            # Final safety check: ensure we didn't leave any prefixes in the SQL
-            sql_query_upper = sql_query.upper().strip()
-            if sql_query_upper.startswith("SQL:"):
-                sql_query = sql_query[4:].strip()
-            elif sql_query_upper.startswith("META:"):
-                # This should have been caught earlier, but as a final safety measure
-                return {
-                    "final_output": sql_query[5:].strip(),
-                    "retry_count": 0
-                }
-            
-            # Post-process: Fix common mistakes automatically
-            # Replace patterns like "bigquery.table" or "FROM bigquery.table" with correct path
-            sql_lower_temp = sql_query.lower()
-            if re.search(r'\bbigquery\s*\.\s*thelook_ecommerce', sql_lower_temp):
-                # Pattern: bigquery.thelook_ecommerce -> bigquery-public-data.thelook_ecommerce
-                sql_query = re.sub(
-                    r'\bbigquery\s*\.\s*thelook_ecommerce',
-                    'bigquery-public-data.thelook_ecommerce',
-                    sql_query,
-                    flags=re.IGNORECASE
-                )
-            
-            if re.search(r'bigquery\s*\.\s*(order_items|orders|products|users)\b', sql_lower_temp):
-                # Pattern: bigquery.table -> bigquery-public-data.thelook_ecommerce.table
-                sql_query = re.sub(
-                    r'bigquery\s*\.\s*(order_items|orders|products|users)\b',
-                    lambda m: f'bigquery-public-data.thelook_ecommerce.{m.group(1)}',
-                    sql_query,
-                    flags=re.IGNORECASE
-                )
-            
-            # Post-process: Add backticks for BigQuery identifiers with hyphens
-            # BigQuery requires backticks around the ENTIRE path for public datasets with hyphens
-            # Pattern: bigquery-public-data.thelook_ecommerce.table -> `bigquery-public-data.thelook_ecommerce.table`
-            # We need to be careful not to double-quote already quoted identifiers
-            if 'bigquery-public-data' in sql_query:
-                # Check if already has backticks - if so, might need to fix format
-                # First, handle table references: bigquery-public-data.thelook_ecommerce.table
-                # Replace with backticks around entire path
-                sql_query = re.sub(
-                    r'(?<!`)bigquery-public-data\.thelook_ecommerce\.([a-z_]+)(?!`)',
-                    r'`bigquery-public-data.thelook_ecommerce.\1`',
-                    sql_query,
-                    flags=re.IGNORECASE
-                )
-                # Fix any incorrectly quoted patterns like `bigquery-public-data`.`thelook_ecommerce`.`table`
-                # Convert to `bigquery-public-data.thelook_ecommerce.table`
-                sql_query = re.sub(
-                    r'`bigquery-public-data`\.`thelook_ecommerce`\.`([a-z_]+)`',
-                    r'`bigquery-public-data.thelook_ecommerce.\1`',
-                    sql_query,
-                    flags=re.IGNORECASE
-                )
-                # Fix column references that might have incorrect quoting
-                sql_query = re.sub(
-                    r'`bigquery-public-data`\.`thelook_ecommerce`\.`([a-z_]+)`\.`([a-z_]+)`',
-                    r'`bigquery-public-data.thelook_ecommerce.\1`.\2',
-                    sql_query,
-                    flags=re.IGNORECASE
-                )
-            
-            # Check if the LLM detected an invalid dataset
-            if sql_query.startswith("ERROR:"):
-                error_message = sql_query.replace("ERROR:", "").strip()
-                return {
-                    "final_output": error_message
-                }
-            
-            # Validate SQL query - check for common issues
-            sql_lower = sql_query.lower()
-            
-            # Check if query incorrectly references "bigquery" as a standalone identifier
-            # This catches patterns like: FROM bigquery.table, JOIN bigquery.table, bigquery.table_name
-            # Also catches: bigquery.table, FROM bigquery, JOIN bigquery, etc.
-            # But exclude "bigquery-public-data" which is valid
-            invalid_patterns = [
-                r'\bbigquery\s*\.',  # bigquery.table or bigquery. table (but not bigquery-public-data)
-                r'from\s+bigquery\s',  # FROM bigquery (space after)
-                r'join\s+bigquery\s',  # JOIN bigquery (space after)
-                r'\bbigquery\s+[a-z_]',  # bigquery followed by word (like "bigquery table")
-            ]
-            
-            for pattern in invalid_patterns:
-                matches = re.finditer(pattern, sql_lower)
-                for match in matches:
-                    # Check if this match is NOT part of "bigquery-public-data"
-                    start, end = match.span()
-                    context = sql_lower[max(0, start-20):min(len(sql_lower), end+20)]
-                    # If the match is followed by "-public-data", it's valid
-                    if not sql_lower[end:end+12].startswith('-public-data'):
-                        return {
-                            "query_error": "Invalid SQL generated: Query incorrectly references 'bigquery' as a table name. Please ensure all tables use the full path: 'bigquery-public-data.thelook_ecommerce.table_name'",
-                            "retry_count": state.get("retry_count", 0) + 1
-                        }
-            
-            # Ensure the query uses the correct dataset prefix
-            # Check for correct prefix - accept both formats: with or without backticks
-            has_correct_prefix = (
-                "bigquery-public-data.thelook_ecommerce" in sql_lower or
-                re.search(r'`bigquery-public-data\.thelook_ecommerce', sql_query, re.IGNORECASE)
+            raw_text = self._extract_text(response)
+
+            upper = raw_text.upper()
+            if upper.startswith('META:'):
+                return {'final_output': raw_text[5:].strip(), 'retry_count': 0}
+
+            if upper.startswith('SQL:'):
+                raw_text = raw_text[4:].strip()
+
+            sql_query = self._sanitize_sql(raw_text)
+
+            if cache_key:
+                self._cache[cache_key] = sql_query
+
+            return {'sql_query': sql_query, 'discovery_result': None, 'query_error': None}
+
+        except Exception as exc:
+            handled = self._handle_generation_error(str(exc), state)
+            if handled:
+                return handled
+            return {'query_error': f'Failed to generate SQL: {exc}', 'retry_count': state.get('retry_count', 0) + 1}
+
+    def _build_prompt(self, state: AgentState) -> str:
+        schema = self._schema_context
+        user_query = state.get('user_query', '').strip()
+        retry_count = state.get('retry_count', 0)
+        discovery = state.get('discovery_result')
+        history_items = state.get('conversation_history', []) or []
+
+        history = ''
+        if history_items:
+            tail = history_items[-3:]
+            formatted = [f"{i + 1}. {item.get('query', 'N/A')}: {item.get('result_summary', 'N/A')[:150]}" for i, item in enumerate(tail)]
+            history = 'Recent context:\n' + '\n'.join(formatted)
+
+        discovery_text = f'Known values:\n{discovery}' if discovery else ''
+
+        if state.get('query_error') and state.get('sql_query'):
+            error_history = state.get('error_history', []) or []
+            error_log = '\n'.join(f'- {msg}' for msg in error_history) or '(no error message provided)'
+            return self.RETRY_PROMPT.format(
+                schema=schema,
+                user_query=user_query,
+                previous_sql=state.get('sql_query', ''),
+                error_log=error_log,
             )
-            
-            if not has_correct_prefix:
-                # Check if it references table names without the full path
-                if any(re.search(rf'\b{table}\b', sql_lower) for table in ["order_items", "orders", "products", "users"]):
-                    # If we see table names but not the full path, this is likely an error
-                    return {
-                        "query_error": f"Invalid SQL generated: Query must use full table paths starting with 'bigquery-public-data.thelook_ecommerce.'. Generated query: {sql_query[:200]}",
-                        "retry_count": state.get("retry_count", 0) + 1
-                    }
-            
-            return {
-                "sql_query": sql_query,
-                "discovery_result": None,  # Clear discovery result after using it
-                "query_error": None  # Clear any previous errors
-            }
-        except Exception as e:
-            error_str = str(e)
-            retry_count = state.get("retry_count", 0)
-            
-            # API key errors
-            if "API_KEY" in error_str or "API key" in error_str or "INVALID_ARGUMENT" in error_str:
+
+        retry_hint = 'Ensure the reply starts with `META:` or `SQL:`.' if retry_count else ''
+
+        return self.MAIN_PROMPT.format(
+            schema=schema,
+            user_query=user_query,
+            history=history,
+            discovery=discovery_text,
+            retry_hint=retry_hint,
+        )
+
+    def _extract_text(self, response) -> str:
+        text = getattr(response, 'text', '') if response else ''
+        text = text.strip()
+        if not text:
+            raise ValueError('Gemini API returned no content')
+        if text.startswith('```'):
+            text = re.sub(r'^```[a-zA-Z]*\n?|```$', '', text).strip()
+        return text
+
+    def _sanitize_sql(self, sql_query: str) -> str:
+        sql_query = sql_query.strip().rstrip('`')
+        if not sql_query:
+            raise ValueError('Empty SQL generated')
+
+        sql_query = re.sub(r'\bbigquery\s*\.\s*thelook_ecommerce', 'bigquery-public-data.thelook_ecommerce', sql_query, flags=re.IGNORECASE)
+        sql_query = re.sub(
+            r'bigquery\s*\.\s*(order_items|orders|products|users)\b',
+            lambda m: f"bigquery-public-data.thelook_ecommerce.{m.group(1).lower()}",
+            sql_query,
+            flags=re.IGNORECASE,
+        )
+        sql_query = re.sub(
+            r'(?<!`)bigquery-public-data\.thelook_ecommerce\.([a-z_]+)(?!`)',
+            r'`bigquery-public-data.thelook_ecommerce.\1`',
+            sql_query,
+            flags=re.IGNORECASE,
+        )
+        sql_query = re.sub(
+            r'`bigquery-public-data`\.`thelook_ecommerce`\.`([a-z_]+)`',
+            r'`bigquery-public-data.thelook_ecommerce.\1`',
+            sql_query,
+            flags=re.IGNORECASE,
+        )
+        sql_query = re.sub(
+            r'`bigquery-public-data`\.`thelook_ecommerce`\.`([a-z_]+)`\.`([a-z_]+)`',
+            r'`bigquery-public-data.thelook_ecommerce.\1`.\2',
+            sql_query,
+            flags=re.IGNORECASE,
+        )
+
+        lowered = sql_query.lower()
+        if re.search(r'\bbigquery(?!-public-data)[\s\.]', lowered):
+            raise ValueError('Invalid SQL generated: use full dataset paths prefixed with `bigquery-public-data.thelook_ecommerce`.')
+
+        if 'bigquery-public-data.thelook_ecommerce' not in lowered:
+            raise ValueError('Invalid SQL generated: missing required dataset prefix.')
+
+        return sql_query
+
+    def _handle_generation_error(self, error_msg: str, state: AgentState) -> Dict[str, Any] | None:
+        retry_count = state.get('retry_count', 0)
+
+        if any(token in error_msg for token in ['API_KEY', 'API key', 'INVALID_ARGUMENT']):
+            return {'query_error': '❌ Invalid Gemini API key. Check GEMINI_API_KEY in your environment.'}
+
+        if any(token in error_msg.lower() for token in ['429', 'resource exhausted', 'rate limit']):
+            if retry_count < len(self.RATE_LIMIT_BACKOFF):
+                wait_seconds = self.RATE_LIMIT_BACKOFF[retry_count]
+                if state.get('_verbose'):
+                    from src.utils.formatter import OutputFormatter
+                    print(OutputFormatter.warning(f'\n⏳ Gemini rate limit hit. Waiting {wait_seconds}s...'))
+                time.sleep(wait_seconds)
                 return {
-                    "query_error": "❌ Invalid Gemini API key. Please check your GEMINI_API_KEY in .env file.\n   Get your key at: https://makersuite.google.com/app/apikey"
+                    'query_error': f'Rate limit exceeded. Retrying after {wait_seconds}s...',
+                    'retry_count': retry_count + 1,
                 }
-            
-            # Check for rate limit errors (429)
-            if "429" in error_str or "Resource exhausted" in error_str or "rate limit" in error_str.lower():
-                if retry_count < 2:  # Only 2 retries, not 3
-                    # Aggressive exponential backoff: 15s, 45s (total 60s)
-                    import time
-                    wait_seconds = 15 * (3 ** retry_count)  # 15s, then 45s
-                    if state.get("_verbose"):
-                        from src.utils.formatter import OutputFormatter
-                        print(OutputFormatter.warning(f"\n⏳ Rate limit hit! Waiting {wait_seconds}s to comply with API limits..."))
-                    time.sleep(wait_seconds)
-                    return {
-                        "query_error": f"Rate limit exceeded. Waited {wait_seconds}s, retrying... (attempt {retry_count + 1}/2)",
-                        "retry_count": retry_count + 1
-                    }
-                else:
-                    return {
-                        "query_error": "⚠️ Rate limit exceeded. Gemini API allows 60 requests/minute. Please wait 60 seconds before trying again.",
-                        "retry_count": retry_count
-                    }
-            
-            # Other errors
             return {
-                "query_error": f"Failed to generate SQL: {error_str}",
-                "retry_count": retry_count + 1
+                'query_error': '⚠️ Gemini rate limit reached. Please wait a minute before retrying.',
+                'retry_count': retry_count,
             }
 
+        return None
 
 class BigQueryExecutorNode:
     """Executes SQL query on BigQuery with logging."""
@@ -886,11 +570,13 @@ class BigQueryExecutorNode:
                 for col in df.columns:
                     values = df[col].dropna().unique().tolist()[:20]  # Limit to 20 values
                     discovery_result += f"  {col}: {', '.join(map(str, values))}\n"
-            
-            return {
+
+                return {
                     "discovery_result": discovery_result,
                     "discovery_query": None,  # Clear discovery query
-                "query_error": None
+                    "query_result": None,  # Ensure stale results don't persist between runs
+                    "query_error": None,
+                    "execution_time_sec": execution_time,
                 }
             
             # Regular SQL query results
