@@ -5,6 +5,7 @@ import re
 import json
 import time
 from pathlib import Path
+from textwrap import dedent
 from typing import Dict, Any
 from datetime import datetime
 import google.generativeai as genai
@@ -291,33 +292,62 @@ class InputNode:
         }
 
 class QueryBuilderNode:
-    """Generates SQL query using Gemini API with rate limiting."""
-    
+    """Generate SQL or meta answers with Gemini while minimising token-heavy prompts."""
+
+    MAIN_PROMPT = dedent(
+        """
+        You are Orion, an analyst for the dataset `bigquery-public-data.thelook_ecommerce`.
+        Use only these tables: orders, order_items, products, users.
+        Always reference tables exactly as `bigquery-public-data.thelook_ecommerce.<table>` and include LIMIT 100 unless the user provides another limit.
+        Respond with either:
+          • `META: <concise answer>` for questions about the assistant or available data.
+          • `SQL: <query>` for runnable Standard SQL.
+        Never add prose before the prefix.
+        {schema}
+
+        User request: {user_query}
+        {history}
+        {discovery}
+        {retry_hint}
+        """
+    )
+
+    RETRY_PROMPT = dedent(
+        """
+        The previous SQL failed on BigQuery. Study the error log and return a corrected query.
+        {schema}
+
+        Original request: {user_query}
+        Previous SQL:
+        {previous_sql}
+
+        Error history:
+        {error_log}
+
+        Return only `SQL: <query>` with fixes applied.
+        """
+    )
+
+    RATE_LIMIT_BACKOFF = (15, 45)
+
     def __init__(self):
-        # Initialize Gemini API
         genai.configure(api_key=config.gemini_api_key)
-        # Use configured Gemini model (default: gemini-2.0-flash-exp)
         self.model = genai.GenerativeModel(config.gemini_model)
-        
-        # Use shared global rate limiter for all Gemini API calls
         from src.utils.rate_limiter import get_global_rate_limiter
+
         self.rate_limiter = get_global_rate_limiter()
-        
+        self._schema_context = self._load_schema_context()
+        self._cache: Dict[str, str] = {}
+
     def _load_schema_context(self) -> str:
-        """Load schema context from saved schema file or fallback to hardcoded."""
-        # Try to load from schema_context.txt file
-        schema_file = Path(__file__).parent.parent.parent / "schema_context.txt"
-        
+        schema_file = Path(__file__).parent.parent.parent / 'schema_context.txt'
         if schema_file.exists():
             try:
-                with open(schema_file, 'r') as f:
-                    return f.read()
-            except Exception as e:
-                # Fallback to hardcoded schema if file can't be read
-                print(f"Warning: Could not load schema file: {e}")
-        
-        # Fallback: Try to load from JSON and format it
-        schema_json = Path(__file__).parent.parent.parent / "schemas.json"
+                return schema_file.read_text()
+            except Exception:
+                pass
+
+        schema_json = Path(__file__).parent.parent.parent / 'schemas.json'
         if schema_json.exists():
             try:
                 with open(schema_json, 'r') as f:
@@ -414,7 +444,6 @@ Generate clean, valid SQL queries only.
 """
     
     def execute(self, state: AgentState) -> Dict[str, Any]:
-        """Generate SQL query from user query or answer meta-question."""
         from src.utils.formatter import OutputFormatter
         import sys
         
@@ -615,10 +644,7 @@ Your response (MUST start with META: or SQL:):
             
             response = self.model.generate_content(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=1000,
-                )
+                generation_config=genai.GenerationConfig(temperature=0.15, max_output_tokens=384),
             )
             
             # Handle potential None or empty response
@@ -855,7 +881,8 @@ Your response (MUST start with META: or SQL:):
             # API key errors
             if "API_KEY" in error_str or "API key" in error_str or "INVALID_ARGUMENT" in error_str:
                 return {
-                    "query_error": "❌ Invalid Gemini API key. Please check your GEMINI_API_KEY in .env file.\n   Get your key at: https://makersuite.google.com/app/apikey"
+                    'query_error': f'Rate limit exceeded. Retrying after {wait_seconds}s...',
+                    'retry_count': retry_count + 1,
                 }
             
             # Check for rate limit errors (429)
@@ -892,8 +919,8 @@ Your response (MUST start with META: or SQL:):
             
             # Other errors
             return {
-                "query_error": f"Failed to generate SQL: {error_str}",
-                "retry_count": retry_count + 1
+                'query_error': '⚠️ Gemini rate limit reached. Please wait a minute before retrying.',
+                'retry_count': retry_count,
             }
 
 class BigQueryExecutorNode:
