@@ -349,6 +349,26 @@ CRITICAL RULES:
            GROUP BY u.gender, year
 - Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
 - Use clear column aliases
+
+REVENUE/SALES QUERY BEST PRACTICES (if query involves revenue/sales):
+- ALWAYS filter order_items.status = 'Complete' when calculating revenue - only completed orders count
+- Join order_items → orders → users for geographical filters (country, state, city)
+- Join order_items → products to get product names/info
+- Use SUM(oi.sale_price) for revenue calculations
+- If query returned empty results, check: 1) Did you filter status='Complete'? 2) Did you use correct geographical location name?
+
+GEOGRAPHICAL QUERY BEST PRACTICES (if query involves location/country/region):
+- Always join order_items → orders → users to access geographical fields (u.country, u.state, u.city)
+- IMPORTANT: If uncertain about exact format (e.g., "United States" vs "US"), use DISCOVER first:
+  * DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+  * This will show the exact format used in the database
+- Use exact location names as they appear in the discovered results
+- For countries: discover to see if database uses full names ('United States') or abbreviations ('US')
+- For states/cities: discover to see exact values if uncertain
+- If query mentions "[country/region/state/city]", filter by the appropriate geographical field (u.country, u.state, u.city) using discovered exact values
+- Examples: "in the US" → DISCOVER country values first to see if it's 'US' or 'United States', then use discovered value
+- If previous query returned empty results, DISCOVER geographical values to identify correct format
+
 - Return ONLY the fixed SQL query, no explanations
 
 Fixed SQL Query:
@@ -406,14 +426,25 @@ PREFER DIRECT SQL GENERATION:
   * Status: 'Complete', 'Shipped', 'Processing', etc.
 - Only use DISCOVER if you're truly uncertain about the exact encoding AND the query explicitly requires it
 
+WHEN TO USE DISCOVERY FOR GEOGRAPHICAL QUERIES:
+- If you're uncertain about the exact format of country/state/city names (e.g., "United States" vs "US", "United Kingdom" vs "UK")
+- If the query mentions a country/region but you're unsure of the exact spelling or format in the database
+- If previous queries returned empty results, discovery can help identify the correct format
+- Examples of when to discover:
+  * Query mentions "US" or "United States" → DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+  * Query mentions "UK" or "United Kingdom" → DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+  * Query mentions a state/city but format is uncertain → DISCOVER: SELECT DISTINCT state/city FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+
 If you're UNCERTAIN about data values AND no discovery results exist above:
 1. Generate a DISCOVERY query to explore the data
 2. Use DISTINCT to find unique values in the relevant column
 3. Limit to 20 rows for fast results
+4. For geographical queries, discover country/state/city values to see exact format
 
 DISCOVERY QUERY FORMAT (ONLY if no discovery results exist above AND truly uncertain):
 When you need to discover data values, respond with "DISCOVER:" prefix:
 Example: "DISCOVER: SELECT DISTINCT gender FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
+Geographical example: "DISCOVER: SELECT DISTINCT country FROM \`bigquery-public-data.thelook_ecommerce.users\` LIMIT 20"
 
 After seeing discovery results, you'll be asked again to generate the main query using discovered information.
 
@@ -431,6 +462,12 @@ EXAMPLES OF SQL QUESTIONS:
 - "show me the top 10 customers" → Direct SQL
 - "show me the males and females count per year" → Direct SQL (use gender IN ('M', 'F'))
 - "how many females are in orders?" → Direct SQL (use gender = 'F')
+- "what are the top products by revenue?" → Direct SQL (MUST filter oi.status = 'Complete' for revenue)
+- "what are the top 3 products sold in the US by revenue?" → DISCOVER country values first (to see if it's 'US' or 'United States'), then SQL
+- "what are the top 3 products sold in United States by revenue?" → DISCOVER country values first (to confirm exact format), then SQL
+- "what are the top products in [country/region]?" → If uncertain about format, DISCOVER first, then SQL (join order_items → orders → users → products, filter by u.country/u.state/u.city)
+- "show me sales by country" → Direct SQL (join order_items → orders → users, group by u.country, filter oi.status='Complete')
+- "what is the revenue in California?" → DISCOVER state values first (to confirm exact format), then SQL
 - "what are the order statuses?" → DISCOVER status values first (if truly uncertain), then SQL
 
 RESPONSE FORMAT (CRITICAL - FOLLOW EXACTLY):
@@ -465,6 +502,42 @@ CRITICAL SQL RULES (for SQL and DISCOVER queries):
            GROUP BY u.gender, year
 - Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
 - Use clear column aliases
+
+REVENUE/SALES QUERY BEST PRACTICES (CRITICAL):
+When calculating revenue or sales from order_items:
+1. ALWAYS filter order_items.status = 'Complete' - only completed orders count as revenue
+2. Join order_items → orders → users for geographical filters (country, state, city)
+3. Join order_items → products to get product names/info
+4. Use SUM(oi.sale_price) for revenue calculations
+
+GEOGRAPHICAL QUERY BEST PRACTICES:
+When filtering by geographical location (country, state, city):
+1. Always join order_items → orders → users to access geographical fields (u.country, u.state, u.city)
+2. IMPORTANT: Use exact geographical names as they appear in the database
+3. If uncertain about the exact format (e.g., "United States" vs "US", "United Kingdom" vs "UK"), use DISCOVER first:
+   - DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+   - This will show you the exact format used in the database
+4. Country names may be full names (e.g., 'United States') or abbreviations (e.g., 'US') - discover to see which format is used
+5. For state/city filters, if uncertain, discover the exact values:
+   - DISCOVER: SELECT DISTINCT state FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+   - DISCOVER: SELECT DISTINCT city FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+6. After discovery, use the exact values you found in your SQL query
+7. Examples of geographical filters (use discovered values):
+   - Country: WHERE u.country = 'United States' (if discovered) or WHERE u.country = 'US' (if discovered)
+   - State: WHERE u.state = 'California' (use exact value from discovery)
+   - City: WHERE u.city = 'New York' (use exact value from discovery)
+   - Multiple countries: WHERE u.country IN ('United States', 'Canada') (use discovered values)
+8. When querying "top products by revenue in [country/region]":
+   - If uncertain about country format, DISCOVER first
+   - Join: order_items → orders → users → products
+   - Filter by: u.country (or u.state, u.city) = '[exact discovered location value]'
+   - Filter by: oi.status = 'Complete' (for revenue queries)
+   - Group by: product fields (p.id, p.name)
+   - Order by: revenue DESC
+9. For geographical analysis queries (e.g., "sales by country", "revenue by state"):
+   - Group by: u.country (or u.state, u.city)
+   - Join: order_items → orders → users
+   - Filter by: oi.status = 'Complete' (for revenue queries)
 
 Your response (MUST start with META: or SQL:):
 """

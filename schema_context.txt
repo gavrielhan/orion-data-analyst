@@ -14,3 +14,39 @@ Rules:
 - Prefix all tables with full path: `bigquery-public-data.thelook_ecommerce.<table>`
 - Always alias tables (o, oi, p, u) and qualify ambiguous columns
 - Use only these 4 tables; reject others
+
+REVENUE/SALES QUERY BEST PRACTICES:
+- When calculating revenue or sales from order_items, ALWAYS filter order_items.status = 'Complete'
+- Only completed orders count as revenue - filtering by status is critical
+- Join order_items → orders → users for geographical filters (country, state, city)
+- Join order_items → products to get product names/info
+- Use SUM(oi.sale_price) for revenue calculations
+
+
+GEOGRAPHICAL QUERY BEST PRACTICES:
+- Always join order_items → orders → users to access geographical fields (u.country, u.state, u.city)
+- IMPORTANT: If uncertain about exact format (e.g., "United States" vs "US", "United Kingdom" vs "UK"), use DISCOVER first:
+  * DISCOVER: SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+  * This will show the exact format used in the database
+- Use exact location names as they appear in the discovered results
+- For countries: discover to see if database uses full names (e.g., 'United States') or abbreviations (e.g., 'US')
+- For states/cities: discover to see exact values if uncertain:
+  * DISCOVER: SELECT DISTINCT state FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+  * DISCOVER: SELECT DISTINCT city FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
+- When query mentions a location (country, state, city), filter by the appropriate field using discovered exact values:
+  * Country: WHERE u.country = '[exact discovered value]'
+  * State: WHERE u.state = '[exact discovered value]'
+  * City: WHERE u.city = '[exact discovered value]'
+- For "top products by revenue in [location]" queries:
+  * If uncertain about location format, DISCOVER first
+  * Join: order_items → orders → users → products
+  * Filter by appropriate geographical field (u.country, u.state, or u.city) using discovered exact value
+  * Filter by: oi.status = 'Complete' (for revenue queries)
+  * Group by: product fields (p.id, p.name)
+  * Order by: revenue DESC
+- For geographical analysis (e.g., "sales by country", "revenue by state"):
+  * Join: order_items → orders → users
+  * Group by: u.country (or u.state, u.city)
+  * Filter by: oi.status = 'Complete' (for revenue queries)
+  * Aggregate: SUM(oi.sale_price) for revenue, COUNT(*) for counts
+- If previous query returned empty results, DISCOVER geographical values to identify correct format
