@@ -47,7 +47,7 @@ class OrionGraph:
         discovery_count = state.get("discovery_count", 0)
         query_error = state.get("query_error")
         retry_count = state.get("retry_count", 0)
-        verbose = state.get("_verbose", False)
+        verbose = state.get("_verbose", True)
         # If it's a meta answer, go directly to output
         if final_output and final_output.strip():
             sys.stdout.flush()
@@ -136,7 +136,7 @@ class OrionGraph:
         from src.utils.formatter import OutputFormatter
         import sys
         
-        verbose = state.get("_verbose", False)
+        verbose = state.get("_verbose", True)
         final_output = state.get("final_output")
         discovery_query = state.get("discovery_query")
         discovery_result = state.get("discovery_result")
@@ -171,7 +171,7 @@ class OrionGraph:
         from src.utils.formatter import OutputFormatter
         import sys
         
-        verbose = state.get("_verbose", False)
+        verbose = state.get("_verbose", True)
         final_output = state.get("final_output")
         query_error = state.get("query_error")
         retry_count = state.get("retry_count", 0)
@@ -292,7 +292,7 @@ class OrionGraph:
             "sql_query": "",
             "discovery_query": None,
             "discovery_result": None,
-            "discovery_count": 0,  # Track discovery queries to prevent infinite loops
+            "discovery_count": 0, 
             "validation_passed": None,
             "estimated_cost_gb": None,
             "query_result": None,
@@ -314,7 +314,7 @@ class OrionGraph:
         }
         
         # Set recursion limit to prevent infinite loops
-        config = {"recursion_limit": 50}  # Increase from default 25
+        config = {"recursion_limit": 25} 
         result = self.app.invoke(initial_state, config)
         return result
 

@@ -1159,7 +1159,8 @@ class AnalysisNode:
         
         df = state.get("query_result")
         query_intent = state.get("query_intent", "general_query")
-        user_query = state.get("user_query", "").lower()
+        user_query_original = state.get("user_query", "")
+        user_query = user_query_original.lower()
         
         if df is None or len(df) == 0:
             return {}
@@ -1171,22 +1172,22 @@ class AnalysisNode:
         try:
             # Check for advanced analysis requests
             if "rfm" in user_query or "customer segment" in user_query:
-                key_findings = AnalysisNode._rfm_analysis(df)
+                key_findings = AnalysisNode._rfm_analysis(df, user_query_original)
                 analysis_type = "rfm_segmentation"
             elif "anomal" in user_query or "outlier" in user_query:
-                key_findings = AnalysisNode._anomaly_detection(df)
+                key_findings = AnalysisNode._anomaly_detection(df, user_query_original)
                 analysis_type = "anomaly_detection"
             elif "compar" in user_query or "versus" in user_query or "vs" in user_query:
-                key_findings = AnalysisNode._comparative_analysis(df)
+                key_findings = AnalysisNode._comparative_analysis(df, user_query_original)
                 analysis_type = "comparative"
             elif analysis_type == "ranking":
-                key_findings = AnalysisNode._analyze_ranking(df)
+                key_findings = AnalysisNode._analyze_ranking(df, user_query_original)
             elif analysis_type == "trends":
-                key_findings = AnalysisNode._analyze_trends(df)
+                key_findings = AnalysisNode._analyze_trends(df, user_query_original)
             elif analysis_type == "segmentation":
-                key_findings = AnalysisNode._analyze_segmentation(df)
+                key_findings = AnalysisNode._analyze_segmentation(df, user_query_original)
             else:
-                key_findings = AnalysisNode._analyze_aggregation(df)
+                key_findings = AnalysisNode._analyze_aggregation(df, user_query_original)
             
             return {
                 "analysis_type": analysis_type,
@@ -1213,7 +1214,7 @@ class AnalysisNode:
             return "aggregation"
     
     @staticmethod
-    def _analyze_ranking(df: pd.DataFrame) -> list:
+    def _analyze_ranking(df: pd.DataFrame, user_query: str = "") -> list:
         """Analyze ranked data and extract key insights."""
         findings = []
         
@@ -1221,11 +1222,9 @@ class AnalysisNode:
             return findings
         
         # Find numeric column for ranking
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) == 0:
+        value_col = AnalysisNode._select_metric_column(df, user_query)
+        if value_col is None:
             return [f"Top {min(5, len(df))} results"]
-        
-        value_col = numeric_cols[0]
         total = df[value_col].sum()
         
         # Top contributor
@@ -1243,15 +1242,13 @@ class AnalysisNode:
         return findings
     
     @staticmethod
-    def _analyze_trends(df: pd.DataFrame) -> list:
+    def _analyze_trends(df: pd.DataFrame, user_query: str = "") -> list:
         """Analyze time-series trends and growth rates."""
         findings = []
         
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) == 0 or len(df) < 2:
+        value_col = AnalysisNode._select_metric_column(df, user_query)
+        if value_col is None or len(df) < 2:
             return findings
-        
-        value_col = numeric_cols[0]
         values = df[value_col].values
         
         # Calculate growth rate
@@ -1273,15 +1270,13 @@ class AnalysisNode:
         return findings
     
     @staticmethod
-    def _analyze_segmentation(df: pd.DataFrame) -> list:
+    def _analyze_segmentation(df: pd.DataFrame, user_query: str = "") -> list:
         """Analyze segmented/grouped data."""
         findings = []
         
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) == 0:
+        value_col = AnalysisNode._select_metric_column(df, user_query)
+        if value_col is None:
             return [f"{len(df)} segments identified"]
-        
-        value_col = numeric_cols[0]
         
         # Distribution stats
         findings.append(f"{len(df)} segments, avg: {df[value_col].mean():.1f}")
@@ -1294,15 +1289,67 @@ class AnalysisNode:
         return findings
     
     @staticmethod
-    def _analyze_aggregation(df: pd.DataFrame) -> list:
+    def _select_metric_column(df: pd.DataFrame, user_query: str = "") -> str:
+        """Intelligently select which numeric column to use for calculations.
+        
+        Priority:
+        1. Column names matching query keywords (revenue, price, amount, count, etc.)
+        2. Column names that look like metrics (not IDs or indices)
+        3. First numeric column as fallback
+        """
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        
+        if len(numeric_cols) == 0:
+            return None
+        
+        if len(numeric_cols) == 1:
+            return numeric_cols[0]
+        
+        # Priority 1: Match query keywords to column names
+        query_lower = user_query.lower()
+        metric_keywords = {
+            'revenue': ['revenue', 'sales', 'income'],
+            'price': ['price', 'cost', 'amount', 'value'],
+            'count': ['count', 'quantity', 'number', 'num'],
+            'total': ['total', 'sum'],
+            'average': ['avg', 'average', 'mean']
+        }
+        
+        for col in numeric_cols:
+            col_lower = col.lower()
+            for metric_type, keywords in metric_keywords.items():
+                if any(kw in query_lower for kw in keywords) and any(kw in col_lower for kw in keywords):
+                    return col
+        
+        # Priority 2: Exclude ID/index columns and prefer metric-like names
+        exclude_patterns = ['id', 'index', 'idx', 'key', 'pk']
+        metric_patterns = ['revenue', 'price', 'amount', 'value', 'count', 'total', 'sum', 'avg', 'mean', 'cost', 'sales']
+        
+        # First try to find columns with metric-like names
+        for col in numeric_cols:
+            col_lower = col.lower()
+            if any(pattern in col_lower for pattern in metric_patterns):
+                if not any(exclude in col_lower for exclude in exclude_patterns):
+                    return col
+        
+        # Priority 3: Exclude obvious ID columns
+        for col in numeric_cols:
+            col_lower = col.lower()
+            if not any(exclude in col_lower for exclude in exclude_patterns):
+                return col
+        
+        # Fallback: return first numeric column
+        return numeric_cols[0]
+    
+    @staticmethod
+    def _analyze_aggregation(df: pd.DataFrame, user_query: str = "") -> list:
         """Basic aggregation analysis."""
         findings = []
         
         findings.append(f"{len(df)} rows returned")
         
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) > 0:
-            col = numeric_cols[0]
+        col = AnalysisNode._select_metric_column(df, user_query)
+        if col:
             total = df[col].sum()
             avg = df[col].mean()
             findings.append(f"Total: {total:.2f}, Average: {avg:.2f}")
@@ -1310,17 +1357,14 @@ class AnalysisNode:
         return findings
     
     @staticmethod
-    def _rfm_analysis(df: pd.DataFrame) -> list:
+    def _rfm_analysis(df: pd.DataFrame, user_query: str = "") -> list:
         """RFM (Recency, Frequency, Monetary) customer segmentation."""
         findings = []
         
         # Look for relevant columns
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) == 0:
+        value_col = AnalysisNode._select_metric_column(df, user_query)
+        if value_col is None:
             return ["RFM analysis requires numeric data"]
-        
-        # Calculate quartiles for segmentation
-        value_col = numeric_cols[0]
         quartiles = df[value_col].quantile([0.25, 0.5, 0.75])
         
         # Segment customers
@@ -1338,15 +1382,13 @@ class AnalysisNode:
         return findings
     
     @staticmethod
-    def _anomaly_detection(df: pd.DataFrame) -> list:
+    def _anomaly_detection(df: pd.DataFrame, user_query: str = "") -> list:
         """Detect outliers and unusual patterns using IQR method."""
         findings = []
         
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) == 0:
+        value_col = AnalysisNode._select_metric_column(df, user_query)
+        if value_col is None:
             return ["No numeric data for anomaly detection"]
-        
-        value_col = numeric_cols[0]
         Q1 = df[value_col].quantile(0.25)
         Q3 = df[value_col].quantile(0.75)
         IQR = Q3 - Q1
@@ -1369,18 +1411,16 @@ class AnalysisNode:
         return findings
     
     @staticmethod
-    def _comparative_analysis(df: pd.DataFrame) -> list:
+    def _comparative_analysis(df: pd.DataFrame, user_query: str = "") -> list:
         """Period-over-period or segment comparison."""
         findings = []
         
         if len(df) < 2:
             return ["Insufficient data for comparison"]
         
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) == 0:
+        value_col = AnalysisNode._select_metric_column(df, user_query)
+        if value_col is None:
             return ["No numeric data for comparison"]
-        
-        value_col = numeric_cols[0]
         
         # Compare first half vs second half
         mid = len(df) // 2

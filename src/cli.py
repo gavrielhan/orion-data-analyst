@@ -416,11 +416,11 @@ def main():
             # Use LLM to detect if this is a chart customization request for previous data
             # Only check if user query contains chart-related keywords (saves API calls)
             is_chart_query = False
-            #chart_keywords = ["chart", "graph", "plot", "visualize", "bar", "line", "pie", "scatter", "box","x","axis","y","x-axis","y-axis","show","display", "change"]
+            chart_keywords = ["chart", "graph", "plot", "visualize", "bar", "line", "pie", "scatter", "box","x","axis","y","x-axis","y-axis","show","display", "change"]
             if last_result is not None and last_result.get("query_result") is not None:
                 # Only call LLM if query contains chart keywords (saves unnecessary API calls)
-                #if any(kw in user_query.lower() for kw in chart_keywords):
-                is_chart_query = _is_chart_customization_query(user_query, last_result.get("user_query", ""))
+                if any(kw in user_query.lower() for kw in chart_keywords):
+                    is_chart_query = _is_chart_customization_query(user_query, last_result.get("user_query", ""))
             
             if is_chart_query:
                 # Regenerate visualization suggestion with new specifications
