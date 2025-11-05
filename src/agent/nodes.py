@@ -248,7 +248,7 @@ class InputNode:
         "what can you do": "I can query the bigquery-public-data.thelook_ecommerce dataset with tables: orders, order_items, products, and users. I can analyze trends, create visualizations, segment customers, detect anomalies, and answer questions about your e-commerce data.",
         "hello": "Hello! I'm Orion, your AI data analyst. I can help you analyze e-commerce data. What would you like to know?",
         "hi": "Hi! I'm Orion. Ask me anything about orders, products, customers, or sales data.",
-        "capabilities": "I can query BigQuery, generate SQL, create charts (bar, line, pie, scatter, box, candle), perform RFM analysis, detect outliers, compare time periods, and provide business insights.",
+        "capabilities": "I can query BigQuery, generate SQL, create charts (bar, line, pie, scatter, box), perform RFM analysis, detect outliers, compare time periods, and provide business insights.",
     }
     
     @staticmethod
@@ -1499,46 +1499,37 @@ Analysis type: {analysis_type}
 Available columns:
 {columns_str}
 
-CRITICAL: Parse the user's explicit chart specifications from their query (these override all heuristics):
-- "year on x-axis" / "x as the years" / "with x as year" → x_col: order_year (or year column)
-- "count on y-axis" / "y as the amounts" / "with y as count" → y_col: count
-- "grouped by gender" / "one bar for females and one for males" / "each year must contain 2 bars" → hue_col: gender
-- "plot them in a bar chart" → chart_type: bar
-- "show as pie chart" → chart_type: pie
+Parse explicit specifications from query (override heuristics):
+- Axis specs: "X on x-axis" / "Y on y-axis" → use those columns
+- Chart type: "bar chart", "line chart", "pie chart" → chart_type
+- Grouping: "grouped by X", "by X", "each Y contains N bars", "multiple categories" → hue_col: X
+- Data structure: If x_col values repeat and there's a categorical column (2-10 values), use it as hue_col
 
-IMPORTANT: User queries often combine data request + chart specs in ONE sentence:
-Example: "show female and male counts per year, plot them in bar chart with x as years and y as amounts, each year must contain 2 bars"
-→ This means: x_col=order_year, y_col=count, hue_col=gender, chart_type=bar
-
-Chart type guidelines:
-- Bar: categorical comparison (sales by category, top products, counts by group)
-- Line: trends over time (monthly revenue, daily orders, time series)
-- Pie: distribution/composition (market share, category breakdown, single dimension)
+Chart type selection:
+- Bar: categorical comparisons, counts by group
+- Line: trends over time, time series
+- Pie: distribution/composition (single dimension)
 - Scatter: correlation between two numeric values
-- Box: distribution analysis of a numeric variable
+- Box: distribution analysis (x_col=categorical, y_col=numeric, optional hue_col for grouping)
 
 Grouping (hue_col):
-- Use hue_col when query mentions multiple categories/groups OR when data structure indicates grouping
-- Keywords: "by gender", "by region", "by category", "male and female", "each X contains N bars"
-- Data structure patterns: If x_col has duplicate values (e.g., 2019, 2019, 2020, 2020...) and there's a categorical column with low cardinality (2-10 values), use it as hue_col
-- Example: "sales by region and product" → x_col: region, y_col: sales, hue_col: product
-- Example: "female and male counts per year" → x_col: order_year, y_col: count, hue_col: gender
-- Example: "each year contains 2 bars" → hue_col: (grouping column like gender/status)
-- Example: Data with order_year (2019, 2019, 2020, 2020...), gender (F, M, F, M...), order_count → x_col: order_year, y_col: order_count, hue_col: gender
+- Set when: query mentions multiple categories OR data shows repeated x values with categorical grouping column
+- Keywords: "by [category]", "grouped", "each X contains N", "male and female"
+- Data pattern: x_col duplicates (2019, 2019, 2020...) + categorical column → use categorical as hue_col
 
-Axis selection priority:
-1. ALWAYS follow explicit user specifications (e.g., "year on x-axis")
-2. For time-based queries: x_col = time/date column, y_col = metric
-3. For grouped bars: x_col = category, y_col = value, hue_col = grouping
+Axis selection:
+1. Follow explicit user specs (e.g., "year on x-axis")
+2. Time-based: x_col = time/date, y_col = metric
+3. Grouped: x_col = category, y_col = value, hue_col = grouping
 
-Respond ONLY in this exact JSON format (no markdown, no extra text):
+Respond ONLY in JSON (no markdown):
 {{"chart_type": "bar|line|pie|scatter|box", "x_col": "column_name", "y_col": "column_name", "hue_col": "column_name_or_null", "title": "Chart Title"}}
 
 Rules:
-- For pie charts: x_col is labels, y_col is values, hue_col is null
-- For box plots: x_col and y_col are the same numeric column, hue_col is null
-- For grouped charts: set hue_col to the grouping column (e.g., gender, category, region)
-- Always provide a descriptive title based on the query"""
+- Pie: x_col=labels, y_col=values, hue_col=null
+- Box: x_col=categorical (optional), y_col=numeric variable, hue_col=optional grouping
+- Grouped charts: set hue_col to grouping column
+- Always provide descriptive title"""
         
         try:
             self.rate_limiter.wait_if_needed()

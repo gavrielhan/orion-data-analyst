@@ -150,7 +150,7 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
     
     # Extract chart type if specified
     if wants_chart:
-        for ctype in ["bar", "line", "pie", "scatter", "box", "candle"]:
+        for ctype in ["bar", "line", "pie", "scatter", "box"]:
             if ctype in user_query_lower:
                 chart_type = ctype
                 break
@@ -158,7 +158,8 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
         # Generate visualization suggestion ONLY when user wants a chart
         # This is lazy evaluation - saves 1 LLM call per query if no chart needed
         user_query = result.get("user_query", "") if result else ""
-        viz_suggestion = _generate_viz_suggestion_lazy(user_query, df)
+        analysis_type = result.get("analysis_type", "aggregation") if result else "aggregation"
+        viz_suggestion = _generate_viz_suggestion_lazy(user_query, df, analysis_type)
         
         if not chart_type and viz_suggestion:
             # Use LLM suggestion
@@ -202,13 +203,14 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
         print(f"✅ CSV saved to: {filepath}")
     
     # Ask about chart second - ONLY generate suggestion AFTER user says they want a chart
-    chart_prompt = "\n📊 Would you like to create a chart? (type 'chart [type]' or 'no')\n    Types: bar, line, pie, scatter, box, candle\n    → "
+    chart_prompt = "\n📊 Would you like to create a chart? (type 'chart [type]' or 'no')\n    Types: bar, line, pie, scatter, box\n    → "
     chart_response = input(chart_prompt).strip().lower()
     
     # Only generate suggestion AFTER user says they want a chart (saves API calls)
     if chart_response not in ["no", "n", ""]:
         user_query = result.get("user_query", "") if result else ""
-        viz_suggestion = _generate_viz_suggestion_lazy(user_query, df)
+        analysis_type = result.get("analysis_type", "aggregation") if result else "aggregation"
+        viz_suggestion = _generate_viz_suggestion_lazy(user_query, df, analysis_type)
         
         if viz_suggestion:
             suggested_type = viz_suggestion.get("chart_type", "bar")
@@ -252,7 +254,7 @@ def handle_export_options(df, visualizer, user_query_lower, result=None):
     elif any(ct in chart_response for ct in ["bar", "line", "pie", "scatter", "box", "candle"]):
         # Try to extract chart type from response
         chart_type = "bar"  # Default
-        for ctype in ["bar", "line", "pie", "scatter", "box", "candle"]:
+        for ctype in ["bar", "line", "pie", "scatter", "box"]:
             if ctype in chart_response:
                 chart_type = ctype
                 break
@@ -410,7 +412,7 @@ def main():
             # Use LLM to detect if this is a chart customization request for previous data
             # Only check if user query contains chart-related keywords (saves API calls)
             is_chart_query = False
-            chart_keywords = ["chart", "graph", "plot", "visualize", "bar", "line", "pie", "scatter", "box", "candle"]
+            chart_keywords = ["chart", "graph", "plot", "visualize", "bar", "line", "pie", "scatter", "box"]
             if last_result is not None and last_result.get("query_result") is not None:
                 # Only call LLM if query contains chart keywords (saves unnecessary API calls)
                 if any(kw in user_query.lower() for kw in chart_keywords):

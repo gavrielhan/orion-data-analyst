@@ -95,9 +95,10 @@ class Visualizer:
                 y_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
                 
         elif chart_type == 'box':
-            # Single numeric column
+            # Categorical x-axis, numeric y-axis (or just numeric y if no categorical)
+            x_col = self._select_categorical_column(categorical_cols, cat_cardinality)
             y_col = self._select_numeric_column(numeric_cols, df)
-            x_col = y_col
+            # If no categorical available, x_col will be None (single box plot)
             
         else:
             # Default: categorical x, numeric y
@@ -210,9 +211,7 @@ class Visualizer:
             elif chart_type == "scatter":
                 self._create_scatter_plot(df, x_col, y_col, title)
             elif chart_type == "box":
-                self._create_box_plot(df, y_col, title)
-            elif chart_type == "candle":
-                self._create_candle_plot(df, title)
+                self._create_box_plot(df, x_col, y_col, title, hue_col)
             else:
                 # Default to bar chart
                 self._create_bar_chart(df, x_col, y_col, title, hue_col)
@@ -283,39 +282,27 @@ class Visualizer:
         plt.xlabel(x_col)
         plt.ylabel(y_col)
     
-    def _create_box_plot(self, df: pd.DataFrame, y_col: str, title: str):
-        """Create box plot for distribution analysis."""
-        sns.boxplot(y=df[y_col], palette="Set2")
-        plt.title(title or f"Distribution of {y_col}")
-        plt.ylabel(y_col)
-    
-    def _create_candle_plot(self, df: pd.DataFrame, title: str):
-        """Create candlestick-style plot (simplified as OHLC bar chart)."""
-        # Requires open, high, low, close columns
-        required_cols = ['open', 'high', 'low', 'close']
-        
-        # Try to find matching columns (case-insensitive)
-        col_map = {}
-        for req in required_cols:
-            for col in df.columns:
-                if req in col.lower():
-                    col_map[req] = col
-                    break
-        
-        if len(col_map) == 4:
-            # Create OHLC bar chart
-            for i, row in df.head(30).iterrows():  # Limit to 30 for readability
-                plt.plot([i, i], [row[col_map['low']], row[col_map['high']]], 
-                        color='black', linewidth=1)
-                color = 'green' if row[col_map['close']] >= row[col_map['open']] else 'red'
-                plt.plot([i, i], [row[col_map['open']], row[col_map['close']]], 
-                        color=color, linewidth=4)
-            plt.title(title or "OHLC Chart")
-            plt.xlabel("Index")
-            plt.ylabel("Value")
+    def _create_box_plot(self, df: pd.DataFrame, x_col: str, y_col: str, title: str, hue_col: Optional[str] = None):
+        """Create box plot for distribution analysis.
+        x_col: categorical variable (optional, if None shows single distribution)
+        y_col: numeric variable to analyze
+        hue_col: optional additional grouping variable
+        """
+        if x_col and x_col in df.columns:
+            # Grouped box plot: categorical x, numeric y
+            if hue_col and hue_col in df.columns:
+                sns.boxplot(data=df, x=x_col, y=y_col, hue=hue_col, palette="Set2")
+                plt.legend(title=hue_col, bbox_to_anchor=(1.05, 1), loc='upper left')
+            else:
+                sns.boxplot(data=df, x=x_col, y=y_col, palette="Set2")
+            plt.xticks(rotation=45, ha='right')
+            plt.xlabel(x_col)
+            plt.title(title or f"Distribution of {y_col} by {x_col}")
         else:
-            # Fallback to line chart if columns don't match
-            self._create_line_chart(df, df.columns[0], df.columns[1], title)
+            # Single box plot: just numeric y
+            sns.boxplot(y=df[y_col], palette="Set2")
+            plt.title(title or f"Distribution of {y_col}")
+        plt.ylabel(y_col)
     
     def save_csv(self, df: pd.DataFrame, filename: str = "results") -> str:
         """Save DataFrame to CSV in results directory."""
