@@ -85,7 +85,7 @@ You: what are the sales trends for the last 6 months?
 Orion: [Creates time-series analysis with month-over-month growth]
 
 You: segment customers by purchase behavior
-Orion: [Performs RFM analysis with customer segments]
+Orion: [Performs customer segmentation and analysis]
 ```
 
 ### Follow-up Questions
@@ -93,7 +93,7 @@ Orion: [Performs RFM analysis with customer segments]
 You: show top customers
 Orion: [Displays ranked customer list]
 
-You: show the same for last quarter
+You: show the same for the last quarter
 Orion: [Uses conversation context to apply date filter]
 
 You: break that down by region
