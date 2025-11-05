@@ -16,14 +16,22 @@ Orion is an intelligent data analysis agent built on **LangGraph**, a framework 
 
 ## System Architecture
 
-### High-Level Flow
+### Visual Diagrams
+
+**High-Level Architecture:**
+![High-Level Schema](assets/high_level_schema.png)
+
+**Detailed Graph Flow:**
+![Graph Schema](assets/graph_schema.png)
+
+### Text-Based Flow
 
 ```
 User Query → Input Classification → Schema Loading → SQL Generation →
 Validation → Approval → Execution → Result Check → Analysis → Insights → Output
 ```
 
-### Node Graph
+### Node Graph (Mermaid)
 
 ```mermaid
 graph TD
@@ -361,9 +369,10 @@ Recommendations:
 - Display metadata (execution time, cost, retry count)
 - Show visualization paths
 - Apply ANSI color formatting
+- **Display Management**: Shows first 50 rows if result set is larger (prevents overwhelming output)
 
 **Output Sections**:
-1. Query Results (DataFrame preview)
+1. Query Results (DataFrame preview - limited to 50 rows if more exist)
 2. Key Findings (bullet list)
 3. Insights (natural language)
 4. Metadata (time, cost, retries)

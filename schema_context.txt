@@ -13,5 +13,4 @@ Joins:
 Rules:
 - Prefix all tables with full path: `bigquery-public-data.thelook_ecommerce.<table>`
 - Always alias tables (o, oi, p, u) and qualify ambiguous columns
-- Use LIMIT 100 unless user specifies otherwise
 - Use only these 4 tables; reject others

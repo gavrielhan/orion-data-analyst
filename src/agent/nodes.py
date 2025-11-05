@@ -142,15 +142,8 @@ class ValidationNode:
                     "query_error": f"Security violation: {keyword} operations are not allowed"
                 }
         
-        # Enforce row limit - check if LIMIT already exists (case-insensitive)
-        # Use regex to find LIMIT keyword that's not part of another word
-        # Look for LIMIT at the end of the query (after ORDER BY if present)
-        has_limit = re.search(r'\bLIMIT\s+\d+', sql_upper)
-        
-        if not has_limit:
-            # Only append LIMIT if query doesn't already have one
-            # Remove trailing semicolon and whitespace before adding LIMIT
-            sql_query = sql_query.rstrip().rstrip(';') + "\nLIMIT 1000"
+        # Note: We no longer enforce LIMIT - queries can run without forced limits
+        # Users can specify their own LIMIT if needed
         
         # Cost estimation using BigQuery dry_run
         try:
@@ -248,7 +241,6 @@ Goal → Return **one line**:
 Rules:
 - Use only the four tables above with full path and backticks:
   `bigquery-public-data.thelook_ecommerce.<table>`
-- Always add LIMIT 100 unless user specifies otherwise.
 - Prefix columns with aliases (o, oi, p, u) to avoid ambiguity.
 - Don’t explain; output must begin with exactly `META:`, `SQL:` or `DISCOVER:`.
 
@@ -277,7 +269,6 @@ SQL: <corrected query>
 
 Rules:
 - Keep full table paths with backticks.
-- Add LIMIT 100 if missing.
 - Alias columns to resolve ambiguity.
 """)
 
@@ -357,7 +348,6 @@ CRITICAL RULES:
            FROM `bigquery-public-data.thelook_ecommerce.users` AS u
            GROUP BY u.gender, year
 - Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
-- Always use LIMIT to restrict results (default 100 rows max)
 - Use clear column aliases
 - Return ONLY the fixed SQL query, no explanations
 
@@ -474,7 +464,6 @@ CRITICAL SQL RULES (for SQL and DISCOVER queries):
            FROM `bigquery-public-data.thelook_ecommerce.users` AS u
            GROUP BY u.gender, year
 - Common ambiguous columns: created_at, updated_at, id, status - ALWAYS prefix with table alias
-- Always use LIMIT to restrict results (default 100 rows max)
 - Use clear column aliases
 
 Your response (MUST start with META: or SQL:):
@@ -730,7 +719,7 @@ Your response (MUST start with META: or SQL:):
             # API key errors
             if "API_KEY" in error_str or "API key" in error_str or "INVALID_ARGUMENT" in error_str:
                 return {
-                    'query_error': f'Rate limit exceeded. Retrying after {wait_seconds}s...',
+                    'query_error': 'Rate limit exceeded. Retrying...',
                     'retry_count': retry_count + 1,
                 }
             
@@ -1470,9 +1459,15 @@ class OutputNode:
                         output_parts.append(f"  • {finding}")
                     output_parts.append("")
                 
-                # Show data
-                output_parts.append(f"📊 Results ({len(df)} rows):\n")
-                output_parts.append(df.to_string(index=False))
+                # Show data - limit display to first 50 rows if there are more
+                total_rows = len(df)
+                if total_rows > 50:
+                    output_parts.append(f"📊 Results ({total_rows} rows, showing first 50):\n")
+                    output_parts.append(df.head(50).to_string(index=False))
+                    output_parts.append(f"\n... ({total_rows - 50} more rows)")
+                else:
+                    output_parts.append(f"📊 Results ({total_rows} rows):\n")
+                    output_parts.append(df.to_string(index=False))
                 
                 # Show insights if available
                 if analysis_result:

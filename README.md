@@ -18,6 +18,8 @@ An intelligent data analysis agent that transforms natural language questions in
 
 ## ✨ What is Orion?
 
+![Orion Interface](assets/orion_face.png)
+
 Orion is your AI business analyst that:
 - **Understands natural language** - Ask questions in plain English
 - **Generates smart SQL** - Powered by Google Gemini AI
@@ -127,66 +129,14 @@ Orion: [Lists available tables and schemas]
 
 Orion uses a **modular node-based architecture** powered by LangGraph:
 
-```
-┌─────────────┐
-│ User Query  │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────┐     Fast-path for       ┌────────────┐
-│   InputNode     │────common questions────▶│ OutputNode │
-└──────┬──────────┘                         └────────────┘
-       │
-       ▼
-┌──────────────────┐
-│   ContextNode    │  • Load schema & conversation history
-└──────┬───────────┘
-       │
-       ▼
-┌───────────────────┐
-│ QueryBuilderNode  │  • Generate SQL with Gemini AI
-└──────┬────────────┘  • Handle retries with error context
-       │
-       ▼
-┌──────────────────┐
-│ ValidationNode   │  • Security checks (block DROP/DELETE)
-└──────┬───────────┘  • Cost estimation & syntax validation
-       │
-       ▼
-┌──────────────────┐
-│  ApprovalNode    │  • Request approval for expensive queries
-└──────┬───────────┘
-       │
-       ▼
-┌─────────────────────┐
-│ BigQueryExecutorNode│  • Execute SQL on BigQuery
-└──────┬──────────────┘  • Track execution time & cost
-       │
-       ▼
-┌──────────────────┐
-│ ResultCheckNode  │  • Route based on results
-└──────┬───────────┘    ├─ Error → Retry
-       │                ├─ Empty → Explain
-       ▼                └─ Success → Analyze
-┌──────────────────┐
-│   AnalysisNode   │  • Statistical analysis
-└──────┬───────────┘  • Trends, ranking, segmentation
-       │              • RFM, anomaly detection
-       ▼
-┌────────────────────┐
-│ InsightGenerator   │  • Generate natural language insights
-└──────┬─────────────┘  • Business recommendations
-       │
-       ▼
-┌──────────────────┐
-│   OutputNode     │  • Format results beautifully
-└──────┬───────────┘  • Display metadata (time, cost)
-       │
-       ▼
-   ┌──────┐
-   │ END  │
-   └──────┘
-```
+### High-Level Architecture
+
+![High-Level Schema](assets/high_level_schema.png)
+
+### Detailed Graph Schema
+
+![Graph Schema](assets/graph_schema.png)
+
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed component descriptions.
 
@@ -245,6 +195,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed component descriptions.
 
 ```
 orion-data-analyst/
+├── assets/                        # Images and diagrams
+│   ├── orion_face.png            # Main interface screenshot
+│   ├── high_level_schema.png     # High-level architecture diagram
+│   └── graph_schema.png          # Detailed graph flow diagram
 ├── src/
 │   ├── __init__.py
 │   ├── cli.py                    # CLI interface with session management
@@ -261,6 +215,10 @@ orion-data-analyst/
 │       ├── rate_limiter.py       # API rate limiting
 │       ├── schema_fetcher.py     # BigQuery schema utilities
 │       └── visualizer.py         # Chart generation (matplotlib/seaborn)
+├── tests/                         # Test suite
+│   ├── __init__.py
+│   ├── test_nodes.py             # Node unit tests
+│   └── test_graph.py             # Graph integration tests
 ├── .env.example                  # Configuration template
 ├── requirements.txt              # Dependencies
 ├── setup.py                      # PyPI packaging
