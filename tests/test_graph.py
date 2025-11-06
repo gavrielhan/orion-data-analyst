@@ -152,14 +152,21 @@ class TestOrionGraph(unittest.TestCase):
         route = self.graph._route_from_validation(state)
         self.assertEqual(route, "approval")
         
-        # Test validation failed -> output
+        # Test validation failed without error -> output
         state["validation_passed"] = False
+        state["query_error"] = None
         route = self.graph._route_from_validation(state)
         self.assertEqual(route, "output")
         
-        # Test with query error -> output
-        state["validation_passed"] = True
-        state["query_error"] = "Some error"
+        # Test validation failed with error and retry_count < 3 -> query_builder (retry)
+        state["validation_passed"] = False
+        state["query_error"] = "Validation error: syntax error"
+        state["retry_count"] = 1  # Less than 3
+        route = self.graph._route_from_validation(state)
+        self.assertEqual(route, "query_builder")
+        
+        # Test validation failed with error and retry_count >= 3 -> output (stop retrying)
+        state["retry_count"] = 3  # Max retries reached
         route = self.graph._route_from_validation(state)
         self.assertEqual(route, "output")
     
@@ -198,9 +205,15 @@ class TestOrionGraph(unittest.TestCase):
         route = self.graph._route_from_result_check(state)
         self.assertEqual(route, "query_builder")
         
-        # Test empty results -> insight_generator
+        # Test empty results with retry_count < 3 -> query_builder (retry)
         state["query_error"] = None
         state["has_empty_results"] = True
+        state["retry_count"] = 1  # Less than 3
+        route = self.graph._route_from_result_check(state)
+        self.assertEqual(route, "query_builder")
+        
+        # Test empty results with retry_count >= 3 -> insight_generator (explain)
+        state["retry_count"] = 3  # Max retries reached
         route = self.graph._route_from_result_check(state)
         self.assertEqual(route, "insight_generator")
         
@@ -251,8 +264,15 @@ class TestOrionGraph(unittest.TestCase):
         route = self.graph._route_from_bigquery_executor(state)
         self.assertEqual(route, "query_builder")
         
+        # Test discovery query still exists (error case) -> output
+        state["discovery_query"] = "SELECT DISTINCT gender FROM users"
+        state["discovery_result"] = None
+        route = self.graph._route_from_bigquery_executor(state)
+        self.assertEqual(route, "output")
+        
         # Test regular query -> result_check
         state["discovery_result"] = None
+        state["discovery_query"] = None
         state["sql_query"] = "SELECT * FROM orders"
         state["query_result"] = pd.DataFrame({"col1": [1, 2, 3]})
         route = self.graph._route_from_bigquery_executor(state)
