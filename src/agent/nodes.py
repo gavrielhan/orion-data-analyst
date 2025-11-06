@@ -274,6 +274,7 @@ AGGREGATION PATTERN (no windows inside aggregates)
   3) join parts→totals; derive ratios with SAFE_DIVIDE; ROUND at output only.
 • Window functions (`... OVER (...)`) are allowed only in the outer SELECT (or QUALIFY), never inside SUM/COUNT/AVG/… and never inside GROUP BY/WHERE/HAVING.
 • Prefer CTEs for clarity; deterministic, lowercase snake_case aliases.
+• Always CAST bucketed numeric expressions (e.g., FLOOR(age/10)*10) to INT64 or STRING before grouping, partitioning, or ordering. BigQuery treats FLOOR() results as FLOAT64.
 
 PERCENT / RATIOS / NULLS
 • pct = 100 * SAFE_DIVIDE(part, total); per parent group sum(pct) ≈ 100.
@@ -285,6 +286,7 @@ DATE/TIME (created_at is TIMESTAMP)
 • Do NOT use TIMESTAMP_SUB with MONTH/YEAR (only DAY/HOUR/MIN/SEC).
 • Match types: don’t compare TIMESTAMP to DATE without wrapping DATE in TIMESTAMP().
 • For “most recent complete month/quarter”, cap the end at DATE_TRUNC(CURRENT_DATE(), MONTH|QUARTER) and compare with TIMESTAMP().
+• CURRENT_DATE() uses UTC unless timezone specified: CURRENT_DATE("America/Los_Angeles").
 
 REVENUE / SALES / RETURNS
 • Revenue = SUM(oi.sale_price). Prefer oi.status = 'Complete' when computing revenue-like metrics.
@@ -300,6 +302,7 @@ GEOGRAPHY & TEXT
 • Use exact stored strings; if unsure (‘US’ vs ‘United States’), run a one-off DISCOVER:
   SELECT DISTINCT country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 20
 • Case-insensitive contains: REGEXP_CONTAINS(LOWER(p.name), r'iphone').
+• BigQuery string comparisons are case-sensitive; use LOWER() for case-insensitive filtering.
 
 DISCOVERY (sparingly)
 • Emit DISCOVER only when a value encoding is truly unknown (limit 1–2). Otherwise generate SQL directly.
@@ -313,10 +316,17 @@ EFFICIENCY / SAFETY
 • BigQuery disallows PARTITION BY or table partitioning on FLOAT types — cast or bucket floats before using them in PARTITION BY or analytic windows.
 • Always cast continuous numeric fields (like cost, price, or computed ratios) to INT64 or STRING when partitioning, grouping, or ranking.
 • Avoid comparing raw FLOATs for equality; round or bucket them first.
-• Always CAST bucketed numeric expressions (e.g., FLOOR(age/10)*10) to INT64 or STRING before grouping, partitioning, or ordering. BigQuery treats FLOOR() results as FLOAT64.
 • Aggregations (SUM, AVG, etc.) must operate on numeric columns only (e.g., oi.sale_price, p.cost), never on STRUCTs or entire table aliases.
 • Avoid naming CTEs or aliases the same as base tables (oi, o, u, p) to prevent alias shadowing.
+• Every non-aggregated column in SELECT must appear in GROUP BY.
+• Do not ORDER BY inside subqueries unless LIMIT N is applied.
+• Close every WITH (...) AS (...) block with a final SELECT — never end a query on a CTE.
+• Use DISTINCT sparingly; prefer GROUP BY for aggregation.
+• ROUND monetary metrics to 2 decimals and suffix percentage fields with "_pct".
+• Use DATE_TRUNC for calendar grouping.
+• When testing exploratory queries, include LIMIT 10 to reduce cost.
 """).strip()
+
 
     MAIN_PROMPT = dedent("""
 You are an intelligent data analysis and engineer assistant named Orion, expert in writing SQL queries. You are an expert at analyzing e-commerce data from `bigquery-public-data.thelook_ecommerce` (tables: orders, order_items, products, users).
