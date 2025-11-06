@@ -9,6 +9,7 @@ from src.config import config
 from src.utils.visualizer import Visualizer
 from src.utils.cache import QueryCache
 from src.utils.formatter import OutputFormatter
+import re
 
 
 def print_banner():
@@ -314,7 +315,7 @@ Examples of A (new data query):
   Current: "show orders by status" → A (completely different data)
 - Previous: "top products"
   Current: "bottom products" → A (different metric/filter)
-
+If the users specifies "make a query" then it is A for sure, if the user says "no visualization" then it is A for sure. Only when the users asks some new visualization on infromation in the data then it is B.
 Respond with ONLY one letter: A or B"""
 
         response = model.generate_content(
@@ -416,10 +417,14 @@ def main():
             # Use LLM to detect if this is a chart customization request for previous data
             # Only check if user query contains chart-related keywords (saves API calls)
             is_chart_query = False
-            chart_keywords = ["chart", "graph", "plot", "visualize", "bar", "line", "pie", "scatter", "box","x","axis","y","x-axis","y-axis","show","display", "change"]
+            chart_keywords = {"chart", "graph", "plot", "visualize", "bar", "line", "pie", "scatter", "box", "x", "axis", "y", "x-axis", "y-axis", "show", "display", "change"}
             if last_result is not None and last_result.get("query_result") is not None:
                 # Only call LLM if query contains chart keywords (saves unnecessary API calls)
-                if any(kw in user_query.lower() for kw in chart_keywords):
+                # Check for whole word matches to avoid false positives (e.g., "group" in "age group")
+                query_lower = user_query.lower()
+                tokens = re.findall(r"\b\w+\b", query_lower)
+                has_chart_keyword = any(token in chart_keywords for token in tokens)
+                if has_chart_keyword:
                     is_chart_query = _is_chart_customization_query(user_query, last_result.get("user_query", ""))
             
             if is_chart_query:

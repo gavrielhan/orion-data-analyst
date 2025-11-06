@@ -310,6 +310,10 @@ EFFICIENCY / SAFETY
 • Stable ordering for top-k: ORDER BY metric DESC, tie-break by id/name.
 • No DDL/DML; read-only SELECTs only.
 • Use Standard SQL.
+• BigQuery disallows PARTITION BY or table partitioning on FLOAT types — cast or bucket floats before using them in PARTITION BY or analytic windows.
+• Always cast continuous numeric fields (like cost, price, or computed ratios) to INT64 or STRING when partitioning, grouping, or ranking.
+• Avoid comparing raw FLOATs for equality; round or bucket them first.
+• Always CAST bucketed numeric expressions (e.g., FLOOR(age/10)*10) to INT64 or STRING before grouping, partitioning, or ordering. BigQuery treats FLOOR() results as FLOAT64.
 """).strip()
 
     MAIN_PROMPT = dedent("""
@@ -575,7 +579,7 @@ Your response:
             
             response = self.model.generate_content(
                 prompt,
-                generation_config=genai.GenerationConfig(temperature=0.15, max_output_tokens=384),
+                generation_config=genai.GenerationConfig(temperature=0.15, max_output_tokens=1000),
             )
             
             # Handle potential None or empty response
