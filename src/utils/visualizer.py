@@ -304,8 +304,7 @@ class Visualizer:
     def _create_bar_chart(self, df: pd.DataFrame, x_col: str, y_col: str, title: str, hue_col: Optional[str] = None):
         """Create bar chart with optional grouping. Data should already be sorted appropriately."""
         # Data is already sorted by _prepare_data_for_chart
-        # Limit to top 15 items for readability (but preserve sorting order)
-        plot_df = df.head(15) if len(df) > 15 else df
+        plot_df = df
         if hue_col and hue_col in df.columns:
             ax = sns.barplot(data=plot_df, x=x_col, y=y_col, hue=hue_col, palette="viridis")
             # Only add legend if there are labeled artists
@@ -346,8 +345,7 @@ class Visualizer:
     
     def _create_pie_chart(self, df: pd.DataFrame, x_col: str, y_col: str, title: str):
         """Create pie chart."""
-        # Limit to top 10 for clarity
-        plot_df = df.head(10) if len(df) > 10 else df
+        plot_df = df
         plt.pie(plot_df[y_col], labels=plot_df[x_col], autopct='%1.1f%%', startangle=90)
         plt.title(title or f"Distribution of {y_col}")
         plt.axis('equal')

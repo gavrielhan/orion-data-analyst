@@ -314,6 +314,8 @@ EFFICIENCY / SAFETY
 • Always cast continuous numeric fields (like cost, price, or computed ratios) to INT64 or STRING when partitioning, grouping, or ranking.
 • Avoid comparing raw FLOATs for equality; round or bucket them first.
 • Always CAST bucketed numeric expressions (e.g., FLOOR(age/10)*10) to INT64 or STRING before grouping, partitioning, or ordering. BigQuery treats FLOOR() results as FLOAT64.
+• Aggregations (SUM, AVG, etc.) must operate on numeric columns only (e.g., oi.sale_price, p.cost), never on STRUCTs or entire table aliases.
+• Avoid naming CTEs or aliases the same as base tables (oi, o, u, p) to prevent alias shadowing.
 """).strip()
 
     MAIN_PROMPT = dedent("""
@@ -1192,7 +1194,7 @@ class AnalysisNode:
             findings.append(f"Top result: {top_pct:.1f}% of total")
         
         # Top 3 concentration
-        if len(df) >= 3:
+        if len(df) > 3:
             top3_val = df.head(3)[value_col].sum()
             top3_pct = (top3_val / total * 100) if total > 0 else 0
             findings.append(f"Top 3 represent {top3_pct:.1f}% of total")

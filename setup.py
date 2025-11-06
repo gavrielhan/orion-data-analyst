@@ -9,7 +9,7 @@ long_description = readme_file.read_text(encoding="utf-8") if readme_file.exists
 
 setup(
     name="orion-data-analyst",
-    version="1.0.9",
+    version="1.1.0",
     author="Gavriel Hannuna",
     author_email="gavriel.hannuna@gmail.com",
     description="AI-powered BigQuery data analysis agent with natural language interface",
