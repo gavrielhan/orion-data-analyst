@@ -11,7 +11,7 @@ class Config:
     
     def __init__(self):
         # Load environment variables
-        env_path = Path(__file__).parent.parent / ".env"
+        env_path = Path.cwd() / ".env"
         if env_path.exists():
             load_dotenv(env_path)
         else:
