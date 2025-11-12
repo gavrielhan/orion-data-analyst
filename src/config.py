@@ -36,6 +36,16 @@ class Config:
         # Output directory for results (charts, CSV, sessions)
         default_output_dir = str(Path.home() / "orion_results")
         self.output_directory = os.getenv("ORION_OUTPUT_DIR", default_output_dir)
+        
+        # Query logging controls
+        query_save_env = os.getenv("QUERY_SAVE", "yes")
+        self.query_save = query_save_env.strip().lower() == "yes"
+        
+        query_save_dir_env = os.getenv("QUERY_SAVE_DIR")
+        if query_save_dir_env:
+            self.query_save_dir = Path(query_save_dir_env).expanduser()
+        else:
+            self.query_save_dir = Path(__file__).parent.parent.parent
     
     def validate(self) -> list[str]:
         """Validate configuration and return list of missing fields."""

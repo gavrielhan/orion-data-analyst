@@ -75,6 +75,8 @@ class ApprovalNode:
     """
     
     APPROVAL_THRESHOLD_GB = 5.0  # Require approval for >5GB queries
+    YES_RESPONSES = {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "continue", "go", "go ahead", "affirmative"}
+    NO_RESPONSES = {"no", "n", "nah", "nope", "ney", "stop", "cancel", "nein"}
     
     @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
@@ -98,15 +100,58 @@ class ApprovalNode:
         
         # Check if approval needed
         if estimated_cost > ApprovalNode.APPROVAL_THRESHOLD_GB:
+            approval_reason = f"Query will scan {estimated_cost:.2f} GB (threshold: {ApprovalNode.APPROVAL_THRESHOLD_GB} GB)"
+            print(OutputFormatter.warning(f"Approval required: {approval_reason}"))
+            sys.stdout.flush()
+            
+            try:
+                user_input = input("Proceed? (yes/no): ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                user_input = ""
+            
+            normalized, recognized = ApprovalNode._normalize_response(user_input)
+            
+            if normalized == "yes":
+                print(OutputFormatter.success("Continuing with execution."))
+                sys.stdout.flush()
+                return {
+                    "requires_approval": True,
+                    "approval_reason": approval_reason,
+                    "approval_granted": True
+                }
+            
+            # Default to denial for anything other than an explicit yes
+            if not recognized:
+                print(OutputFormatter.warning("Unrecognized response. Defaulting to 'no'."))
+                sys.stdout.flush()
+            
+            print(OutputFormatter.error("Query cancelled by user."))
+            sys.stdout.flush()
             return {
                 "requires_approval": True,
-                "approval_reason": f"Query will scan {estimated_cost:.2f} GB (threshold: {ApprovalNode.APPROVAL_THRESHOLD_GB} GB)"
+                "approval_reason": approval_reason,
+                "approval_granted": False,
+                "query_error": f"User denied approval: {approval_reason}"
             }
         
         return {
             "requires_approval": False,
-            "approval_reason": None
+            "approval_reason": None,
+            "approval_granted": True
         }
+
+    @staticmethod
+    def _normalize_response(response: str) -> tuple[str, bool]:
+        """Normalize user input into ('yes'|'no', recognized?)."""
+        if not response:
+            return "no", False
+        
+        first_token = response.split()[0]
+        if first_token in ApprovalNode.YES_RESPONSES:
+            return "yes", True
+        if first_token in ApprovalNode.NO_RESPONSES:
+            return "no", True
+        return "no", False
 
 class ValidationNode:
     """Validates SQL queries for security, syntax, and cost."""
@@ -447,7 +492,6 @@ Your response:
 """)
 
 
-    RATE_LIMIT_BACKOFF = (15, 45)
 
     def __init__(self):
         genai.configure(api_key=config.gemini_api_key)
@@ -589,7 +633,10 @@ Your response:
                 print(f"⏱️  [QueryBuilderNode] Waited {wait_time:.1f}s for rate limit")
             sys.stdout.flush()
             
-            response = self.model.generate_content(
+            # Make LLM call with token tracking
+            from src.utils.token_tracker import track_llm_call
+            response = track_llm_call(
+                self.model,
                 prompt,
                 generation_config=genai.GenerationConfig(temperature=0.15, max_output_tokens=1000),
             )
@@ -1021,11 +1068,16 @@ class BigQueryExecutorNode:
     @staticmethod
     def _log_query(sql: str, exec_time: float, bytes_processed: int, success: bool, error: str = None):
         """Log query execution details."""
-        log_file = Path(__file__).parent.parent.parent / "query_log.jsonl"
+        if not getattr(config, "query_save", True):
+            return
+        
+        log_dir = getattr(config, "query_save_dir", Path(__file__).parent.parent.parent)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "query_log.jsonl"
         
         log_entry = {
             "timestamp": datetime.now().isoformat(),
-            "query": sql[:500],  # Truncate long queries
+            "query": sql,
             "execution_time_sec": round(exec_time, 3),
             "bytes_processed": bytes_processed,
             "cost_gb": round(bytes_processed / (1024 ** 3), 6) if bytes_processed else 0,
@@ -1463,12 +1515,12 @@ Possible reasons: filters too restrictive, no data for time period, typos, etc."
         try:
             self.rate_limiter.wait_if_needed()
             
-            response = self.model.generate_content(
+            # Make LLM call with token tracking
+            from src.utils.token_tracker import track_llm_call
+            response = track_llm_call(
+                self.model,
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.3,
-                    max_output_tokens=150,
-                )
+                generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=150),
             )
             
             insight = response.text.strip() if response and hasattr(response, 'text') else "No data found matching your criteria."
@@ -1514,12 +1566,12 @@ Keep it concise and business-focused. Use bullet points."""
         try:
             self.rate_limiter.wait_if_needed()
             
-            response = self.model.generate_content(
+            # Make LLM call with token tracking
+            from src.utils.token_tracker import track_llm_call
+            response = track_llm_call(
+                self.model,
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.4,
-                    max_output_tokens=300,
-                )
+                generation_config=genai.GenerationConfig(temperature=0.4, max_output_tokens=300),
             )
             
             insights = response.text.strip() if response and hasattr(response, 'text') else "Analysis complete."
@@ -1589,7 +1641,9 @@ Rules:
         try:
             self.rate_limiter.wait_if_needed()
             
-            response = self.model.generate_content(
+            from src.utils.token_tracker import track_llm_call
+            response = track_llm_call(
+                self.model,
                 prompt,
                 generation_config=genai.GenerationConfig(
                     temperature=0.1,
@@ -1632,6 +1686,22 @@ class OutputNode:
     """Formats and returns final output with metadata and visualizations."""
     
     @staticmethod
+    def _format_token_usage() -> str:
+        """Format token usage statistics as a string."""
+        from src.utils.token_tracker import get_token_tracker
+        tracker = get_token_tracker()
+        query = tracker.get_current_query_usage()
+        minute = tracker.get_usage_last_minute()
+        hour = tracker.get_usage_last_hour()
+        
+        return (
+            f"\n\n🧮 Token Usage:"
+            f"\n  This query: {query['total_tokens']} tokens (prompt: {query['prompt_tokens']}, response: {query['response_tokens']})"
+            f"\n  Last minute: {minute['total_tokens']} tokens across {minute['call_count']} calls"
+            f"\n  Last hour: {hour['total_tokens']} tokens across {hour['call_count']} calls"
+        )
+    
+    @staticmethod
     def execute(state: AgentState) -> Dict[str, Any]:
         """Format output for display with analysis insights."""
         import sys
@@ -1653,7 +1723,7 @@ class OutputNode:
         viz_path = state.get("visualization_path")
         
         if existing_output and existing_output.strip():
-            return {"final_output": existing_output}
+            return {"final_output": existing_output + OutputNode._format_token_usage()}
         
         # Build output with metadata
         output_parts = []
@@ -1702,6 +1772,9 @@ class OutputNode:
                 output_parts.append(f"\n⏱️  Executed in {exec_time:.2f}s")
         else:
             output_parts.append("No results generated.")
+        
+        # Add token usage stats
+        output_parts.append(OutputNode._format_token_usage())
         
         return {
             "final_output": "\n".join(output_parts)

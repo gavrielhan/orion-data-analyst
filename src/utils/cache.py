@@ -16,18 +16,65 @@ class QueryCache:
     Provides instant responses for repeated queries.
     """
     
-    def __init__(self, cache_dir: Path = None, ttl_seconds: int = 3600):
+    def __init__(self, cache_dir: Path = None, ttl_seconds: int = 5 * 3600):
         self.ttl = ttl_seconds
         self.cache_dir = cache_dir or (Path.home() / ".orion" / "cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.memory_cache = {}  # In-memory for speed
+        self._last_cleanup = 0.0
+        # Clean up immediately on startup to enforce TTL across sessions
+        self.enforce_ttl(force=True)
     
     def _get_cache_key(self, query: str) -> str:
         """Generate cache key from query."""
         return hashlib.md5(query.lower().strip().encode()).hexdigest()
     
+    def enforce_ttl(self, force: bool = False) -> None:
+        """
+        Remove expired cache entries from memory and disk.
+        Runs automatically but can be forced when the agent becomes active.
+        """
+        now = time.time()
+        cleanup_interval = max(300, min(self.ttl // 4, 3600))
+        
+        if not force and (now - self._last_cleanup) < cleanup_interval:
+            return
+        
+        self._last_cleanup = now
+        
+        # Clean in-memory cache
+        expired_keys = [
+            key for key, entry in list(self.memory_cache.items())
+            if now - entry.get('timestamp', 0) >= self.ttl
+        ]
+        for key in expired_keys:
+            self.memory_cache.pop(key, None)
+        
+        # Clean persisted cache files
+        for cache_file in list(self.cache_dir.glob("*.pkl")):
+            try:
+                with open(cache_file, 'rb') as f:
+                    entry = pickle.load(f)
+                if now - entry.get('timestamp', 0) >= self.ttl:
+                    cache_file.unlink()
+            except Exception:
+                continue
+        
+        for cache_file in list(self.cache_dir.glob("*.json")):
+            try:
+                with open(cache_file, 'r') as f:
+                    entry = json.load(f)
+                timestamp = entry.get('timestamp')
+                if timestamp is None or now - timestamp >= self.ttl:
+                    cache_file.unlink()
+            except Exception:
+                continue
+    
     def get(self, query: str) -> Optional[Any]:
         """Retrieve cached result if valid."""
+        # Periodic cleanup for TTL enforcement
+        self.enforce_ttl()
+        
         key = self._get_cache_key(query)
         
         # Check memory first
@@ -105,6 +152,9 @@ class QueryCache:
     
     def set(self, query: str, data: Any) -> None:
         """Cache query result."""
+        # Cleanup before inserting new data to keep cache bounded
+        self.enforce_ttl()
+        
         key = self._get_cache_key(query)
         
         # Validate data before caching - ensure DataFrames are preserved

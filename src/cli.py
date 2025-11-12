@@ -60,6 +60,10 @@ def validate_config():
         print("# Optional: Output Directory (default: ~/orion_results)")
         print("# ORION_OUTPUT_DIR=/path/to/your/output")
         print("")
+        print("# Optional: Query Saving")
+        print("# QUERY_SAVE=yes")
+        print("# QUERY_SAVE_DIR=/path/to/save-queries")
+        print("")
         print("# Optional BigQuery Settings")
         print("BIGQUERY_DATASET=bigquery-public-data.thelook_ecommerce")
         print("─" * 60)
@@ -318,12 +322,12 @@ Examples of A (new data query):
 If the users specifies "make a query" then it is A for sure, if the user says "no visualization" then it is A for sure. Only when the users asks some new visualization on infromation in the data then it is B.
 Respond with ONLY one letter: A or B"""
 
-        response = model.generate_content(
+        # Make LLM call with token tracking
+        from src.utils.token_tracker import track_llm_call
+        response = track_llm_call(
+            model,
             prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=10,
-            )
+            generation_config=genai.GenerationConfig(temperature=0.1, max_output_tokens=10),
         )
         
         if response and hasattr(response, 'text'):
@@ -356,7 +360,8 @@ def main():
     
     agent = OrionGraph()
     visualizer = Visualizer()
-    cache = QueryCache()
+    cache = QueryCache(ttl_seconds=5 * 3600)
+    cache.enforce_ttl(force=True)
     conversation_history = []
     last_result = None  # Store last result for chart re-generation
     
@@ -435,6 +440,11 @@ def main():
                 
                 # Import InsightGeneratorNode to regenerate visualization
                 from src.agent.nodes import InsightGeneratorNode
+                from src.utils.token_tracker import get_token_tracker
+                
+                tracker = get_token_tracker()
+                tracker.reset_query_counter()
+                
                 insight_gen = InsightGeneratorNode()
                 viz_suggestion = insight_gen._suggest_visualization(user_query, df, analysis_type)
                 
@@ -453,20 +463,6 @@ def main():
                     print(OutputFormatter.format("\n🤖 **Orion working...**"))
                     result = agent.invoke(user_query, conversation_history, verbose=True)
 
-                    # Handle approval if needed
-                    requires_approval = result.get("requires_approval", False)
-                    approval_reason = result.get("approval_reason")
-                    
-                    if requires_approval and approval_reason:
-                        print(OutputFormatter.warning(f"Approval Required: {approval_reason}"))
-                        approval = input("Proceed? (yes/no): ").strip().lower()
-                        
-                        if approval not in ["yes", "y"]:
-                            print(OutputFormatter.error("Query cancelled"))
-                            continue
-                        
-                        print(OutputFormatter.format("\n🤖 **Executing approved query...**"))
-                    
                     # Cache successful results
                     if not result.get("query_error"):
                         cache.set(user_query, result)
@@ -521,7 +517,17 @@ def main():
                         print(OutputFormatter.error("❌ Could not generate chart specification from your request"))
                 else:
                     handle_export_options(df, visualizer, user_query.lower(), result)
-            
+
+            if is_chart_query:
+                query_usage = tracker.get_current_query_usage()
+                minute_usage = tracker.get_usage_last_minute()
+                hour_usage = tracker.get_usage_last_hour()
+
+                print("\n🧮 Token Usage:")
+                print(f"  This query: {query_usage['total_tokens']} tokens (prompt: {query_usage['prompt_tokens']}, response: {query_usage['response_tokens']})")
+                print(f"  Last minute: {minute_usage['total_tokens']} tokens across {minute_usage['call_count']} calls")
+                print(f"  Last hour: {hour_usage['total_tokens']} tokens across {hour_usage['call_count']} calls")
+
         except KeyboardInterrupt:
             print("\n\n👋 Goodbye!")
             break

@@ -209,7 +209,8 @@ class TestContextNode(unittest.TestCase):
 class TestApprovalNode(unittest.TestCase):
     """Tests for ApprovalNode."""
     
-    def test_approval_required_high_cost(self):
+    @patch('builtins.input', return_value='yes')
+    def test_approval_required_high_cost(self, mock_input):
         """Test that approval is required for queries > 5GB."""
         state: AgentState = {
             "user_query": "test",
@@ -244,6 +245,8 @@ class TestApprovalNode(unittest.TestCase):
         self.assertTrue(result["requires_approval"])
         self.assertIsNotNone(result["approval_reason"])
         self.assertIn("7.5", result["approval_reason"])
+        self.assertTrue(result["approval_granted"])
+        mock_input.assert_called_once()
     
     def test_no_approval_low_cost(self):
         """Test that approval is not required for queries < 5GB."""
@@ -279,6 +282,7 @@ class TestApprovalNode(unittest.TestCase):
         result = ApprovalNode.execute(state)
         self.assertFalse(result["requires_approval"])
         self.assertIsNone(result["approval_reason"])
+        self.assertTrue(result["approval_granted"])
     
     def test_skips_approval_when_validation_failed(self):
         """Test that approval check is skipped when validation fails."""
@@ -313,6 +317,44 @@ class TestApprovalNode(unittest.TestCase):
         
         result = ApprovalNode.execute(state)
         self.assertEqual(result, {})  # Should return empty dict
+
+    @patch('builtins.input', return_value='nah')
+    def test_approval_denied_or_unrecognized_defaults_to_no(self, mock_input):
+        """Test that denial stops execution and sets query_error."""
+        state: AgentState = {
+            "user_query": "test",
+            "query_intent": "",
+            "schema_context": None,
+            "schema_cache_timestamp": None,
+            "sql_query": "SELECT * FROM orders",
+            "discovery_query": None,
+            "discovery_result": None,
+            "discovery_count": 0,
+            "validation_passed": True,
+            "estimated_cost_gb": 12.0,
+            "query_result": None,
+            "query_error": None,
+            "analysis_result": None,
+            "analysis_type": None,
+            "has_empty_results": None,
+            "key_findings": None,
+            "visualization_path": None,
+            "visualization_suggestion": None,
+            "conversation_history": None,
+            "requires_approval": None,
+            "approval_reason": None,
+            "final_output": "",
+            "retry_count": 0,
+            "execution_time_sec": None,
+            "error_history": None,
+            "_verbose": False
+        }
+        
+        result = ApprovalNode.execute(state)
+        self.assertTrue(result["requires_approval"])
+        self.assertFalse(result["approval_granted"])
+        self.assertIn("User denied approval", result["query_error"])
+        mock_input.assert_called_once()
 
 
 class TestValidationNode(unittest.TestCase):

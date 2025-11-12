@@ -130,6 +130,18 @@ class OrionGraph:
             return "output"
         
         return "approval"
+
+    def _route_from_approval(self, state: AgentState) -> str:
+        """Route after approval step based on user decision."""
+        # Absolute terminator: if final_output is set, always go to output
+        if state.get("final_output"):
+            return "output"
+        
+        approval_granted = state.get("approval_granted")
+        if approval_granted is False:
+            return "output"
+        
+        return "bigquery_executor"
     
     def _route_from_bigquery_executor(self, state: AgentState) -> str:
         """Route from bigquery executor - check if discovery or main query."""
@@ -257,8 +269,14 @@ class OrionGraph:
                 "query_builder": "query_builder"  # Retry on validation errors
             }
         )
-        # Approval always proceeds to executor (CLI handles user confirmation)
-        workflow.add_edge("approval", "bigquery_executor")
+        workflow.add_conditional_edges(
+            "approval",
+            self._route_from_approval,
+            {
+                "bigquery_executor": "bigquery_executor",
+                "output": "output"
+            }
+        )
         
         # Executor routes based on whether it's discovery or main query
         workflow.add_conditional_edges(
@@ -290,6 +308,11 @@ class OrionGraph:
     
     def invoke(self, user_query: str, conversation_history: list = None, verbose: bool = True) -> dict:
         """Execute the agent with a user query and optional conversation history."""
+        # Reset token counter for this query
+        from src.utils.token_tracker import get_token_tracker
+        token_tracker = get_token_tracker()
+        token_tracker.reset_query_counter()
+        
         initial_state: AgentState = {
             "user_query": user_query,
             "query_intent": "",
@@ -312,6 +335,7 @@ class OrionGraph:
             "conversation_history": conversation_history or [],
             "requires_approval": None,
             "approval_reason": None,
+            "approval_granted": None,
             "final_output": "",
             "retry_count": 0,
             "execution_time_sec": None,

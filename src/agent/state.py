@@ -47,6 +47,7 @@ class AgentState(TypedDict):
     # Human-in-the-loop
     requires_approval: Optional[bool]
     approval_reason: Optional[str]
+    approval_granted: Optional[bool]
     
     # Metadata
     retry_count: int
